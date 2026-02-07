@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block title %}{{ paper.metadata.title if paper else 'Not Found' }} — Paper Assistant{% endblock %}
+
+{% block content %}
+{% if paper %}
+<hgroup>
+    <h1>{{ paper.metadata.title }}</h1>
+    <p>
+        <a href="{{ paper.metadata.arxiv_url }}" target="_blank">arXiv:{{ paper.metadata.arxiv_id }}</a>
+        &middot; {{ paper.metadata.authors[:5] | join(', ') }}{% if paper.metadata.authors|length > 5 %}, et al.{% endif %}
+        &middot; {{ paper.metadata.published.strftime('%Y-%m-%d') }}
+    </p>
+</hgroup>
+
+<!-- Metadata sidebar -->
+<div class="grid">
+    <div>
+        <small>
+            <strong>Status:</strong> {{ paper.status.value }}<br>
+            <strong>Added:</strong> {{ paper.date_added.strftime('%Y-%m-%d %H:%M') }}<br>
+            {% if paper.model_used %}<strong>Model:</strong> {{ paper.model_used }}<br>{% endif %}
+            {% if paper.token_count %}<strong>Tokens:</strong> {{ paper.token_count }}<br>{% endif %}
+            <strong>Tags:</strong>
+            <span id="tags-display">
+                {% for tag in paper.tags %}
+                <span class="tag-chip">{{ tag }} <a href="#" onclick="removeTag('{{ tag }}'); return false;" title="Remove tag">&times;</a></span>
+                {% endfor %}
+            </span>
+            <form id="add-tag-form" style="display: inline;">
+                <input type="text" id="new-tag" placeholder="Add tag..." style="display: inline; width: 120px; padding: 2px 6px; font-size: 0.85rem; margin: 0;">
+            </form>
+            <br>
+        </small>
+    </div>
+    <div>
+        {% if paper.audio_path %}
+        <strong>Audio Summary</strong>
+        <audio controls preload="metadata" style="width: 100%;">
+            <source src="/audio/{{ paper.metadata.arxiv_id }}.mp3" type="audio/mpeg">
+        </audio>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Actions -->
+<div style="margin-bottom: 1rem;">
+    <button id="delete-btn" class="secondary outline" style="font-size: 0.85rem;" onclick="deletePaper()">Delete this paper</button>
+</div>
+
+<hr>
+
+<!-- Summary content rendered with markdown + math -->
+<article id="summary-content">
+    {% if summary %}
+    <p aria-busy="true">Rendering summary...</p>
+    {% else %}
+    <p><em>No summary available yet.</em></p>
+    {% endif %}
+</article>
+
+<p><a href="/">&larr; Back to all papers</a></p>
+
+{% else %}
+<h1>Paper not found</h1>
+<p>No paper with ID <code>{{ arxiv_id }}</code> was found.</p>
+<p><a href="/">&larr; Back to all papers</a></p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if paper and summary %}
+<script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script>
+(function() {
+    // Raw markdown passed from Jinja (JSON-escaped to avoid HTML issues)
+    const raw = {{ summary | tojson }};
+
+    // Strip YAML front matter (between first two --- lines)
+    let md = raw;
+    if (md.startsWith('---')) {
+        const endIdx = md.indexOf('---', 3);
+        if (endIdx !== -1) {
+            md = md.substring(endIdx + 3).trimStart();
+        }
+    }
+
+    // Skip the duplicate title/authors header (already shown in template)
+    // Remove lines up to and including the first "---" separator after front matter
+    const hrIdx = md.indexOf('\n---\n');
+    if (hrIdx !== -1 && hrIdx < 400) {
+        md = md.substring(hrIdx + 5).trimStart();
+    }
+
+    // Render markdown to HTML
+    const html = marked.parse(md);
+    document.getElementById('summary-content').innerHTML = html;
+
+    // Render LaTeX math with KaTeX
+    renderMathInElement(document.getElementById('summary-content'), {
+        delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '\\[', right: '\\]', display: true},
+        ],
+        throwOnError: false,
+    });
+})();
+</script>
+{% endif %}
+{% if paper %}
+<script>
+const arxivId = {{ paper.metadata.arxiv_id | tojson }};
+
+function renderTags(tags) {
+    const el = document.getElementById('tags-display');
+    el.innerHTML = tags.map(t =>
+        `<span class="tag-chip">${t} <a href="#" onclick="removeTag('${t}'); return false;" title="Remove tag">&times;</a></span>`
+    ).join(' ');
+}
+
+async function removeTag(tag) {
+    const resp = await fetch(`/api/paper/${arxivId}/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.tags !== undefined) renderTags(data.tags);
+}
+
+document.getElementById('add-tag-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-tag');
+    const tags = input.value.split(',').map(t => t.trim()).filter(Boolean);
+    if (!tags.length) return;
+    const resp = await fetch(`/api/paper/${arxivId}/tags`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tags}),
+    });
+    const data = await resp.json();
+    if (data.tags !== undefined) renderTags(data.tags);
+    input.value = '';
+});
+
+async function deletePaper() {
+    if (!confirm('Delete this paper and all its files?')) return;
+    const resp = await fetch(`/api/paper/${arxivId}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        window.location.href = '/';
+    } else {
+        alert(data.error || 'Failed to delete paper');
+    }
+}
+</script>
+{% endif %}
+{% endblock %}

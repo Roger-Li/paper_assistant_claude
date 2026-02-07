@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block title %}Papers — Paper Assistant{% endblock %}
+
+{% block content %}
+<h1>Papers</h1>
+
+<!-- Add paper form -->
+<details>
+    <summary>Add a new paper</summary>
+    <form id="add-form">
+        <input type="url" name="url" placeholder="https://arxiv.org/abs/2503.10291" required>
+        <input type="text" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
+        <button type="submit">Add Paper</button>
+    </form>
+    <div id="add-status"></div>
+</details>
+
+<!-- Import pre-generated summary -->
+<details>
+    <summary>Import a pre-generated summary</summary>
+    <form id="import-form">
+        <label for="import-url">arXiv URL</label>
+        <input type="url" id="import-url" name="url" placeholder="https://arxiv.org/abs/2503.10291" required>
+        <label for="import-tags">Tags</label>
+        <input type="text" id="import-tags" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
+        <label for="import-markdown">Markdown summary</label>
+        <textarea id="import-markdown" name="markdown" rows="12" placeholder="Paste your markdown summary here..." required></textarea>
+        <button type="submit">Import Summary</button>
+    </form>
+    <div id="import-status"></div>
+</details>
+
+<!-- Tag filter -->
+{% if all_tags %}
+<p>
+    <strong>Filter by tag:</strong>
+    <a href="/" {% if not active_tag %}class="contrast"{% endif %}>All</a>
+    {% for tag in all_tags %}
+    &middot; <a href="/?tag={{ tag }}" {% if active_tag == tag %}class="contrast"{% endif %}>{{ tag }}</a>
+    {% endfor %}
+</p>
+{% endif %}
+
+<!-- Paper list -->
+{% if papers %}
+<p><small>{{ total }} paper{{ 's' if total != 1 else '' }}</small></p>
+<table>
+    <thead>
+        <tr>
+            <th>arXiv ID</th>
+            <th>Title</th>
+            <th>Tags</th>
+            <th>Added</th>
+            <th>Status</th>
+            <th>Audio</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in papers %}
+        <tr id="row-{{ p.metadata.arxiv_id }}">
+            <td><a href="/paper/{{ p.metadata.arxiv_id }}">{{ p.metadata.arxiv_id }}</a></td>
+            <td><a href="/paper/{{ p.metadata.arxiv_id }}">{{ p.metadata.title[:60] }}{{ '...' if p.metadata.title|length > 60 else '' }}</a></td>
+            <td>{{ p.tags | join(', ') }}</td>
+            <td>{{ p.date_added.strftime('%Y-%m-%d') }}</td>
+            <td>{{ p.status.value }}</td>
+            <td>
+                {% if p.audio_path %}
+                <a href="/audio/{{ p.metadata.arxiv_id }}.mp3">Play</a>
+                {% else %}
+                —
+                {% endif %}
+            </td>
+            <td><a href="#" onclick="deletePaper('{{ p.metadata.arxiv_id }}'); return false;" style="color: var(--pico-color-red-500, #dc3545); font-size: 0.8rem;">Delete</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No papers yet. Add one using the form above or the CLI:</p>
+<pre><code>paper-assist add https://arxiv.org/abs/2503.10291</code></pre>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function parseTags(str) {
+    return str ? str.split(',').map(t => t.trim()).filter(Boolean) : [];
+}
+
+document.getElementById('add-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const url = form.url.value;
+    const tags = parseTags(form.tags.value);
+    const status = document.getElementById('add-status');
+
+    status.innerHTML = '<p aria-busy="true">Processing paper... This may take a minute.</p>';
+    form.querySelector('button[type="submit"]').disabled = true;
+
+    try {
+        const params = new URLSearchParams({url, skip_audio: 'false'});
+        tags.forEach(t => params.append('tags', t));
+        const resp = await fetch(`/api/add?${params}`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            const detail = data.detail ? data.detail.map(d => d.msg).join(', ') : '';
+            status.innerHTML = `<p class="error">${data.error || detail || 'Server error'}</p>`;
+        } else {
+            status.innerHTML = `<p>Added: <a href="/paper/${data.arxiv_id}">${data.title}</a></p>`;
+            setTimeout(() => location.reload(), 1000);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+        form.querySelector('button[type="submit"]').disabled = false;
+    }
+});
+
+document.getElementById('import-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const url = document.getElementById('import-url').value;
+    const tags = parseTags(document.getElementById('import-tags').value);
+    const markdown = document.getElementById('import-markdown').value;
+    const status = document.getElementById('import-status');
+
+    status.innerHTML = '<p aria-busy="true">Importing summary and generating audio...</p>';
+    form.querySelector('button[type="submit"]').disabled = true;
+
+    try {
+        const resp = await fetch('/api/import', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url, markdown, tags}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            const detail = data.detail ? data.detail.map(d => d.msg).join(', ') : '';
+            const errMsg = data.error || detail || `Server error (${resp.status})`;
+            status.innerHTML = `<p class="error">${errMsg}</p>`;
+        } else {
+            status.innerHTML = `<p>Imported: <a href="/paper/${data.arxiv_id}">${data.title}</a></p>`;
+            setTimeout(() => location.reload(), 1000);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+        form.querySelector('button[type="submit"]').disabled = false;
+    }
+});
+
+async function deletePaper(arxivId) {
+    if (!confirm(`Delete paper ${arxivId} and all its files?`)) return;
+    const resp = await fetch(`/api/paper/${arxivId}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        document.getElementById(`row-${arxivId}`)?.remove();
+    } else {
+        alert(data.error || 'Failed to delete paper');
+    }
+}
+</script>
+{% endblock %}

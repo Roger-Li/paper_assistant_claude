@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Paper Assistant{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <nav class="container">
+        <ul>
+            <li><strong><a href="/">Paper Assistant</a></strong></li>
+        </ul>
+        <ul>
+            <li><a href="/">Papers</a></li>
+            <li><a href="/feed.xml">RSS Feed</a></li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="container">
+        <small>Paper Assistant v0.1.0 — AI-powered ML paper summarizer</small>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
