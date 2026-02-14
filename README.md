@@ -62,6 +62,10 @@ Configuration resolution order is:
 | `PAPER_ASSIST_TTS_VOICE` | No | `en-US-AriaNeural` | Voice for generated narration. |
 | `PAPER_ASSIST_ICLOUD_SYNC` | No | `true` | `true/1/yes` enables iCloud audio copy. |
 | `PAPER_ASSIST_ICLOUD_DIR` | No | `~/Library/Mobile Documents/com~apple~CloudDocs/Paper Assistant` | iCloud destination folder. |
+| `PAPER_ASSIST_ARXIV_USER_AGENT` | No | `paper-assistant/0.1 (...)` | Set app name + contact email for arXiv API requests. |
+| `PAPER_ASSIST_ARXIV_MAX_RETRIES` | No | `6` | Retry attempts for arXiv `429`, `5xx`, and transient network errors. |
+| `PAPER_ASSIST_ARXIV_BACKOFF_BASE_SECONDS` | No | `2.0` | Base delay for exponential backoff (with jitter). |
+| `PAPER_ASSIST_ARXIV_BACKOFF_CAP_SECONDS` | No | `90.0` | Max delay cap for exponential backoff. |
 
 ## Data Directory Layout
 
@@ -181,6 +185,19 @@ You are likely on Linux. Use file import:
 ```bash
 paper-assist import <arxiv-url> --file summary.md
 ```
+
+### arXiv `429` rate limit errors
+
+arXiv can throttle API clients when request cadence is too high or clients are not clearly identified.
+
+Paper Assistant now retries `429` and transient failures with exponential backoff and honors `Retry-After`
+when arXiv provides it. To reduce throttling risk, set a descriptive User-Agent with contact info:
+
+```bash
+export PAPER_ASSIST_ARXIV_USER_AGENT="paper-assistant/0.1 (you@example.com)"
+```
+
+If retries are exhausted, wait for the suggested delay in the error and retry the import.
 
 ### Paper already exists
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -123,7 +121,6 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.post("/api/add")
     async def api_add_paper(url: str, skip_audio: bool = False, tags: list[str] | None = None):
         """API endpoint to add a paper (triggers the full pipeline)."""
-        from fastapi import Query as _Query
         from paper_assistant.arxiv import download_pdf, fetch_metadata, parse_arxiv_url
         from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.pdf import extract_text_from_pdf
@@ -145,13 +142,13 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
 
         # Run pipeline
         try:
-            metadata = await fetch_metadata(arxiv_id)
+            metadata = await fetch_metadata(arxiv_id, config=config)
 
             paper = Paper(metadata=metadata, status=ProcessingStatus.PENDING, tags=tags or [])
             storage.add_paper(paper)
 
             pdf_path = config.pdfs_dir / make_pdf_filename(arxiv_id)
-            await download_pdf(arxiv_id, pdf_path)
+            await download_pdf(arxiv_id, pdf_path, config=config)
             paper.pdf_path = f"pdfs/{make_pdf_filename(arxiv_id)}"
             paper.status = ProcessingStatus.FETCHED
             storage.add_paper(paper)
@@ -212,7 +209,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": f"Paper {arxiv_id} already exists", "arxiv_id": arxiv_id}
 
         try:
-            metadata = await fetch_metadata(arxiv_id)
+            metadata = await fetch_metadata(arxiv_id, config=config)
 
             sections = parse_summary_sections(req.markdown)
             one_pager = find_one_pager(sections)

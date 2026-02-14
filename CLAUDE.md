@@ -88,6 +88,10 @@ Supported env vars (actual behavior in `config.py`):
 - `PAPER_ASSIST_TTS_VOICE`
 - `PAPER_ASSIST_ICLOUD_SYNC`
 - `PAPER_ASSIST_ICLOUD_DIR`
+- `PAPER_ASSIST_ARXIV_USER_AGENT`
+- `PAPER_ASSIST_ARXIV_MAX_RETRIES`
+- `PAPER_ASSIST_ARXIV_BACKOFF_BASE_SECONDS`
+- `PAPER_ASSIST_ARXIV_BACKOFF_CAP_SECONDS`
 
 Resolution order:
 - CLI override -> env var -> `.env` -> default

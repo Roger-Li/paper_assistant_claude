@@ -92,7 +92,7 @@ async def _add_paper(
 
     console.print(f"[bold]Step 1/5:[/bold] Fetching metadata for {arxiv_id}...")
     try:
-        metadata = await fetch_metadata(arxiv_id)
+        metadata = await fetch_metadata(arxiv_id, config=config)
     except Exception as e:
         console.print(f"[red]Error fetching metadata:[/red] {e}")
         return
@@ -112,7 +112,7 @@ async def _add_paper(
     console.print("[bold]Step 2/5:[/bold] Downloading PDF...")
     pdf_path = config.pdfs_dir / make_pdf_filename(arxiv_id)
     try:
-        await download_pdf(arxiv_id, pdf_path)
+        await download_pdf(arxiv_id, pdf_path, config=config)
         paper.pdf_path = f"pdfs/{make_pdf_filename(arxiv_id)}"
         paper.status = ProcessingStatus.FETCHED
         storage.add_paper(paper)
@@ -191,7 +191,7 @@ async def _add_paper(
             console.print(f"[yellow]Warning: iCloud copy failed:[/yellow] {e}")
 
     console.print()
-    console.print(f"[green]Done![/green] Paper processed successfully.")
+    console.print("[green]Done![/green] Paper processed successfully.")
     console.print(f"  Summary: {summary_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
@@ -282,7 +282,7 @@ async def _import_paper(
 
     console.print(f"[bold]Step 1/4:[/bold] Fetching metadata for {arxiv_id}...")
     try:
-        metadata = await fetch_metadata(arxiv_id)
+        metadata = await fetch_metadata(arxiv_id, config=config)
     except Exception as e:
         console.print(f"[red]Error fetching metadata:[/red] {e}")
         return
@@ -356,7 +356,7 @@ async def _import_paper(
             console.print(f"[yellow]Warning: iCloud copy failed:[/yellow] {e}")
 
     console.print()
-    console.print(f"[green]Done![/green] Paper imported successfully.")
+    console.print("[green]Done![/green] Paper imported successfully.")
     console.print(f"  Summary: {summary_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")

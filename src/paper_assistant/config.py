@@ -28,6 +28,13 @@ class Config(BaseModel):
     cache_pdfs: bool = True
     icloud_sync: bool = True
     icloud_dir: Path = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Paper Assistant"
+    arxiv_user_agent: str = (
+        "paper-assistant/0.1 (+https://arxiv.org/help/api/user-manual; "
+        "set PAPER_ASSIST_ARXIV_USER_AGENT with contact email)"
+    )
+    arxiv_max_retries: int = 6
+    arxiv_backoff_base_seconds: float = 2.0
+    arxiv_backoff_cap_seconds: float = 90.0
 
     @property
     def papers_dir(self) -> Path:
@@ -101,5 +108,22 @@ def load_config(**overrides: object) -> Config:
     icloud_dir = os.getenv("PAPER_ASSIST_ICLOUD_DIR")
     if icloud_dir:
         kwargs["icloud_dir"] = Path(icloud_dir)
+
+    # arXiv request policy
+    arxiv_user_agent = os.getenv("PAPER_ASSIST_ARXIV_USER_AGENT")
+    if arxiv_user_agent:
+        kwargs["arxiv_user_agent"] = arxiv_user_agent
+
+    arxiv_max_retries = os.getenv("PAPER_ASSIST_ARXIV_MAX_RETRIES")
+    if arxiv_max_retries is not None:
+        kwargs["arxiv_max_retries"] = int(arxiv_max_retries)
+
+    arxiv_backoff_base_seconds = os.getenv("PAPER_ASSIST_ARXIV_BACKOFF_BASE_SECONDS")
+    if arxiv_backoff_base_seconds is not None:
+        kwargs["arxiv_backoff_base_seconds"] = float(arxiv_backoff_base_seconds)
+
+    arxiv_backoff_cap_seconds = os.getenv("PAPER_ASSIST_ARXIV_BACKOFF_CAP_SECONDS")
+    if arxiv_backoff_cap_seconds is not None:
+        kwargs["arxiv_backoff_cap_seconds"] = float(arxiv_backoff_cap_seconds)
 
     return Config(**kwargs)

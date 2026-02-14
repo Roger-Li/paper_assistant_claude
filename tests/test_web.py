@@ -1,12 +1,12 @@
 """Tests for paper_assistant.web API endpoints."""
 
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from paper_assistant.arxiv import ArxivRateLimitError
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
 from paper_assistant.storage import StorageManager
@@ -266,6 +266,25 @@ class TestApiImport:
             json={"url": "https://arxiv.org/abs/2503.10291"},
         )
         assert resp.status_code == 422
+
+    def test_import_arxiv_rate_limit_error_message(self, client):
+        with (
+            patch("paper_assistant.arxiv.parse_arxiv_url", return_value="2503.10291"),
+            patch(
+                "paper_assistant.arxiv.fetch_metadata",
+                new_callable=AsyncMock,
+                side_effect=ArxivRateLimitError(attempts=3, retry_after_seconds=45),
+            ),
+        ):
+            resp = client.post(
+                "/api/import",
+                json={"url": "https://arxiv.org/abs/2503.10291", "markdown": "# Summary\nbody"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+        assert "rate limit" in data["error"].lower()
 
 
 class TestApiUpdateSummary:
