@@ -151,6 +151,9 @@ If touching Notion sync paths, verify:
 - timestamp conflict behavior (local newer vs remote newer)
 - dry-run produces action report and no mutation
 - archive propagation is soft (no local hard delete)
+- markdown formatting (bold, italic, code, links, math) renders in Notion
+- nested bullet/numbered lists preserve hierarchy via Notion `children` arrays
+- `fetch_page_markdown` recursively fetches nested block children
 
 ## Testing Expectations
 
@@ -183,7 +186,7 @@ A task is complete only when all are true:
 
 1. ~~Minor improvement - sorting entries by tag/date added/title; enable editing existing summaries to override and regenerate audio files.~~ (Done)
 2. `regenerate-audio` command (`single` and `--all`) for imported/legacy entries.
-3. Improve Notion sync fidelity (block formatting coverage, larger-page performance, upload retries).
+3. ~~Improve Notion sync fidelity (block formatting coverage, larger-page performance, upload retries).~~ (Formatting and nested lists done; upload retries remain.)
 4. Reachable podcast feed for phone clients (LAN/tunnel/hosted URL strategy).
 5. Batch import for multiple arXiv entries + summary files.
 6. Search across titles/tags/summaries.

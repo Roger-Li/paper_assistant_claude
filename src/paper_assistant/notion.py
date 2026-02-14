@@ -240,9 +240,21 @@ def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
         list_type = "numbered_list_item" if ordered else "bulleted_list_item"
         blocks: list[dict[str, Any]] = []
         for item_node in node.get("children", []):
-            rt = _block_text_rich_text(item_node)
+            rt_inlines: list[dict[str, Any]] = []
+            nested_blocks: list[dict[str, Any]] = []
+            for child in item_node.get("children", []):
+                ctype = child.get("type", "")
+                if ctype in ("block_text", "paragraph"):
+                    rt_inlines.extend(child.get("children", []))
+                elif ctype == "list":
+                    nested_blocks.extend(_ast_node_to_blocks(child))
+                # skip blank_line nodes
+            rt = _chunk_rich_text(_inline_to_rich_text(rt_inlines)) or _to_rich_text("")
+            block_payload: dict[str, Any] = {"rich_text": rt}
+            if nested_blocks:
+                block_payload["children"] = nested_blocks
             blocks.append(
-                {"object": "block", "type": list_type, list_type: {"rich_text": rt}}
+                {"object": "block", "type": list_type, list_type: block_payload}
             )
         return blocks
 
@@ -320,7 +332,8 @@ def _markdown_to_blocks(markdown: str) -> list[dict[str, Any]]:
     return blocks
 
 
-def _blocks_to_markdown(blocks: list[dict[str, Any]]) -> str:
+def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
+    prefix = "  " * indent
     lines: list[str] = []
     for block in blocks:
         if not block or block.get("archived"):
@@ -331,29 +344,47 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]]) -> str:
         text = _read_plain_text(rich_text).strip()
 
         if block_type == "heading_1":
-            lines.append(f"# {text}")
+            lines.append(f"{prefix}# {text}")
         elif block_type == "heading_2":
-            lines.append(f"## {text}")
+            lines.append(f"{prefix}## {text}")
         elif block_type == "heading_3":
-            lines.append(f"### {text}")
+            lines.append(f"{prefix}### {text}")
         elif block_type == "bulleted_list_item":
-            lines.append(f"- {text}")
+            lines.append(f"{prefix}- {text}")
+            children = payload.get("children", [])
+            if children:
+                nested = _blocks_to_markdown(children, indent + 1)
+                if nested:
+                    lines.append(nested)
         elif block_type == "numbered_list_item":
-            lines.append(f"1. {text}")
+            lines.append(f"{prefix}1. {text}")
+            children = payload.get("children", [])
+            if children:
+                nested = _blocks_to_markdown(children, indent + 1)
+                if nested:
+                    lines.append(nested)
         elif block_type == "quote":
-            lines.append(f"> {text}")
+            lines.append(f"{prefix}> {text}")
         elif block_type == "code":
             lang = payload.get("language", "")
-            lines.append(f"```{lang}".rstrip())
+            lines.append(f"{prefix}```{lang}".rstrip())
             lines.append(text)
-            lines.append("```")
+            lines.append(f"{prefix}```")
+        elif block_type == "equation":
+            expr = payload.get("expression", "")
+            lines.append(f"{prefix}$$")
+            lines.append(f"{prefix}{expr}")
+            lines.append(f"{prefix}$$")
+        elif block_type == "divider":
+            lines.append(f"{prefix}---")
         elif block_type == "paragraph":
-            lines.append(text)
+            lines.append(f"{prefix}{text}" if text else "")
 
         if lines and lines[-1] != "":
             lines.append("")
 
-    return "\n".join(lines).strip()
+    result = "\n".join(lines)
+    return result.strip() if indent == 0 else result.rstrip()
 
 
 def _dedupe_tags(tags: list[str]) -> list[str]:
@@ -641,24 +672,39 @@ class NotionClient:
             notion_last_edited_time=notion_last_edited,
         )
 
-    async def fetch_page_markdown(self, page_id: str) -> str:
+    _LIST_BLOCK_TYPES = {"bulleted_list_item", "numbered_list_item"}
+
+    async def _fetch_blocks(self, parent_id: str) -> list[dict[str, Any]]:
+        """Paginate through all child blocks of a parent."""
         blocks: list[dict[str, Any]] = []
         cursor: str | None = None
-
         while True:
             params: dict[str, Any] = {"page_size": 100}
             if cursor:
                 params["start_cursor"] = cursor
             data = await self._request(
                 "GET",
-                f"/blocks/{page_id}/children",
+                f"/blocks/{parent_id}/children",
                 params=params,
             )
             blocks.extend(data.get("results", []))
             if not data.get("has_more"):
                 break
             cursor = data.get("next_cursor")
+        return blocks
 
+    async def _fetch_blocks_recursive(self, parent_id: str) -> list[dict[str, Any]]:
+        """Fetch blocks and recursively populate children for list items."""
+        blocks = await self._fetch_blocks(parent_id)
+        for block in blocks:
+            btype = block.get("type", "")
+            if block.get("has_children") and btype in self._LIST_BLOCK_TYPES:
+                children = await self._fetch_blocks_recursive(block["id"])
+                block[btype]["children"] = children
+        return blocks
+
+    async def fetch_page_markdown(self, page_id: str) -> str:
+        blocks = await self._fetch_blocks_recursive(page_id)
         return _blocks_to_markdown(blocks)
 
     def _build_properties(

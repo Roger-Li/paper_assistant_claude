@@ -10,7 +10,7 @@ import pytest
 
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
-from paper_assistant.notion import NotionPaper, sync_notion, _markdown_to_blocks
+from paper_assistant.notion import NotionPaper, sync_notion, _markdown_to_blocks, _blocks_to_markdown
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
 
@@ -422,3 +422,109 @@ class TestMarkdownToBlocks:
         blocks = _markdown_to_blocks("text\n\n---\n\nmore")
         divider_blocks = _find_block(blocks, "divider")
         assert len(divider_blocks) == 1
+
+    def test_nested_bullets(self):
+        blocks = _markdown_to_blocks("- parent\n  - child 1\n  - child 2")
+        assert len(blocks) == 1
+        parent = blocks[0]
+        assert parent["type"] == "bulleted_list_item"
+        children = parent["bulleted_list_item"].get("children", [])
+        assert len(children) == 2
+        assert children[0]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "child 1"
+        assert children[1]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "child 2"
+
+    def test_deep_nested_bullets(self):
+        blocks = _markdown_to_blocks("- L1\n  - L2\n    - L3")
+        l1 = blocks[0]
+        l2 = l1["bulleted_list_item"]["children"][0]
+        l3 = l2["bulleted_list_item"]["children"][0]
+        assert l3["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "L3"
+
+    def test_nested_mixed_list_types(self):
+        blocks = _markdown_to_blocks("1. first\n   - sub bullet\n2. second")
+        assert blocks[0]["type"] == "numbered_list_item"
+        children = blocks[0]["numbered_list_item"].get("children", [])
+        assert len(children) == 1
+        assert children[0]["type"] == "bulleted_list_item"
+        assert blocks[1]["type"] == "numbered_list_item"
+
+    def test_nested_bullet_with_formatting(self):
+        blocks = _markdown_to_blocks("- **bold** parent\n  - *italic* child")
+        parent_rt = _rich_text(blocks[0])
+        bold_items = [r for r in parent_rt if r.get("annotations", {}).get("bold")]
+        assert len(bold_items) == 1
+        children = blocks[0]["bulleted_list_item"]["children"]
+        child_rt = children[0]["bulleted_list_item"]["rich_text"]
+        italic_items = [r for r in child_rt if r.get("annotations", {}).get("italic")]
+        assert len(italic_items) == 1
+
+
+class TestBlocksToMarkdown:
+    def test_nested_list(self):
+        blocks = [
+            {
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{"plain_text": "parent"}],
+                    "children": [
+                        {
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": [{"plain_text": "child"}],
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "- parent" in md
+        assert "  - child" in md
+
+    def test_deep_nested_list(self):
+        blocks = [
+            {
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{"plain_text": "L1"}],
+                    "children": [
+                        {
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": [{"plain_text": "L2"}],
+                                "children": [
+                                    {
+                                        "type": "bulleted_list_item",
+                                        "bulleted_list_item": {
+                                            "rich_text": [{"plain_text": "L3"}],
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "- L1" in md
+        assert "  - L2" in md
+        assert "    - L3" in md
+
+    def test_equation_block(self):
+        blocks = [
+            {
+                "type": "equation",
+                "equation": {"expression": "E=mc^2"},
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "$$" in md
+        assert "E=mc^2" in md
+
+    def test_divider_block(self):
+        blocks = [
+            {"type": "divider", "divider": {}},
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "---" in md
