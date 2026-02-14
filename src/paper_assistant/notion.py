@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import mistune
 
 from paper_assistant.arxiv import fetch_metadata
 from paper_assistant.config import Config
@@ -47,6 +48,7 @@ def _read_plain_text(items: list[dict[str, Any]]) -> str:
 
 
 def _to_rich_text(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
+    """Simple plain-text rich_text builder (fallback for non-markdown contexts)."""
     text = text or ""
     if not text:
         return [{"type": "text", "text": {"content": ""}}]
@@ -60,6 +62,133 @@ def _to_rich_text(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
             }
         )
     return parts
+
+
+# ---------------------------------------------------------------------------
+# Mistune AST → Notion rich_text / block conversion
+# ---------------------------------------------------------------------------
+
+_CHUNK_LIMIT = 1800
+
+_md_parser = mistune.create_markdown(renderer=None, plugins=["math", "strikethrough"])
+
+# Match $$...$$ anywhere (inline or block) and normalise to the
+# three-line format that mistune's math plugin expects for block_math:
+#   $$
+#   expression
+#   $$
+_DISPLAY_MATH_RE = re.compile(r"\$\$\s*(.+?)\s*\$\$", re.DOTALL)
+
+
+def _normalise_display_math(md: str) -> str:
+    """Rewrite ``$$...$$`` into the three-line block format mistune requires."""
+    return _DISPLAY_MATH_RE.sub(lambda m: f"\n\n$$\n{m.group(1)}\n$$\n\n", md)
+
+
+def _inline_to_rich_text(
+    children: list[dict[str, Any]],
+    annotations: dict[str, bool] | None = None,
+    link_url: str | None = None,
+) -> list[dict[str, Any]]:
+    """Recursively convert mistune inline AST nodes to Notion rich_text items."""
+    if annotations is None:
+        annotations = {}
+    items: list[dict[str, Any]] = []
+    for node in children:
+        ntype = node.get("type", "")
+        if ntype == "text":
+            raw = node.get("raw", "")
+            if not raw:
+                continue
+            rt: dict[str, Any] = {"type": "text", "text": {"content": raw}}
+            if link_url:
+                rt["text"]["link"] = {"url": link_url}
+            if annotations:
+                rt["annotations"] = {**annotations}
+            items.append(rt)
+        elif ntype == "strong":
+            merged = {**annotations, "bold": True}
+            items.extend(
+                _inline_to_rich_text(node.get("children", []), merged, link_url)
+            )
+        elif ntype == "emphasis":
+            merged = {**annotations, "italic": True}
+            items.extend(
+                _inline_to_rich_text(node.get("children", []), merged, link_url)
+            )
+        elif ntype == "strikethrough":
+            merged = {**annotations, "strikethrough": True}
+            items.extend(
+                _inline_to_rich_text(node.get("children", []), merged, link_url)
+            )
+        elif ntype == "codespan":
+            raw = node.get("raw", "")
+            rt = {"type": "text", "text": {"content": raw}}
+            merged = {**annotations, "code": True}
+            rt["annotations"] = merged
+            if link_url:
+                rt["text"]["link"] = {"url": link_url}
+            items.append(rt)
+        elif ntype == "link":
+            url = node.get("attrs", {}).get("url", "")
+            items.extend(
+                _inline_to_rich_text(node.get("children", []), annotations, url)
+            )
+        elif ntype == "inline_math":
+            expr = node.get("raw", "").strip("$").strip()
+            items.append({"type": "equation", "equation": {"expression": expr}})
+        elif ntype == "softbreak":
+            items.append({"type": "text", "text": {"content": "\n"}})
+        else:
+            # Fallback: render raw text if present
+            raw = node.get("raw", "")
+            if raw:
+                rt = {"type": "text", "text": {"content": raw}}
+                if annotations:
+                    rt["annotations"] = {**annotations}
+                if link_url:
+                    rt["text"]["link"] = {"url": link_url}
+                items.append(rt)
+    return items
+
+
+def _chunk_rich_text(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split any rich_text item whose content exceeds the Notion API limit."""
+    result: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("type") == "equation":
+            result.append(item)
+            continue
+        content = item.get("text", {}).get("content", "")
+        if len(content) <= _CHUNK_LIMIT:
+            result.append(item)
+            continue
+        for start in range(0, len(content), _CHUNK_LIMIT):
+            chunk = dict(item)
+            chunk["text"] = {**item["text"], "content": content[start : start + _CHUNK_LIMIT]}
+            result.append(chunk)
+    return result
+
+
+def _children_rich_text(node: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract rich_text from a node's children (inline AST nodes)."""
+    children = node.get("children", [])
+    items = _inline_to_rich_text(children)
+    return _chunk_rich_text(items) or _to_rich_text("")
+
+
+def _block_text_rich_text(node: dict[str, Any]) -> list[dict[str, Any]]:
+    """Handle list_item > block_text or paragraph children."""
+    children = node.get("children", [])
+    all_inline: list[dict[str, Any]] = []
+    for child in children:
+        ctype = child.get("type", "")
+        if ctype in ("block_text", "paragraph"):
+            all_inline.extend(child.get("children", []))
+        else:
+            all_inline.append(child)
+    items = _inline_to_rich_text(all_inline)
+    return _chunk_rich_text(items) or _to_rich_text("")
 
 
 def _strip_summary_wrapper(raw: str) -> str:
@@ -86,119 +215,100 @@ def _load_local_summary_markdown(config: Config, paper: Paper) -> str:
     return _strip_summary_wrapper(summary_path.read_text(encoding="utf-8"))
 
 
+def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert a single mistune AST node into one or more Notion blocks."""
+    ntype = node.get("type", "")
+
+    if ntype == "heading":
+        level = node.get("attrs", {}).get("level", 1)
+        level = min(max(level, 1), 3)
+        block_type = f"heading_{level}"
+        return [
+            {
+                "object": "block",
+                "type": block_type,
+                block_type: {"rich_text": _children_rich_text(node)},
+            }
+        ]
+
+    if ntype == "paragraph":
+        rt = _children_rich_text(node)
+        return [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": rt}}]
+
+    if ntype == "list":
+        ordered = node.get("attrs", {}).get("ordered", False)
+        list_type = "numbered_list_item" if ordered else "bulleted_list_item"
+        blocks: list[dict[str, Any]] = []
+        for item_node in node.get("children", []):
+            rt = _block_text_rich_text(item_node)
+            blocks.append(
+                {"object": "block", "type": list_type, list_type: {"rich_text": rt}}
+            )
+        return blocks
+
+    if ntype == "block_quote":
+        # Flatten all children paragraphs into one quote block
+        all_inline: list[dict[str, Any]] = []
+        for child in node.get("children", []):
+            if child.get("type") in ("paragraph", "block_text"):
+                all_inline.extend(child.get("children", []))
+        rt = _inline_to_rich_text(all_inline)
+        rt = _chunk_rich_text(rt) or _to_rich_text("")
+        return [{"object": "block", "type": "quote", "quote": {"rich_text": rt}}]
+
+    if ntype == "block_code":
+        language = node.get("attrs", {}).get("info", "") or "plain text"
+        raw = node.get("raw", "").rstrip("\n")
+        return [
+            {
+                "object": "block",
+                "type": "code",
+                "code": {
+                    "language": language,
+                    "rich_text": _to_rich_text(raw),
+                },
+            }
+        ]
+
+    if ntype == "block_math":
+        expr = node.get("raw", "")
+        return [
+            {
+                "object": "block",
+                "type": "equation",
+                "equation": {"expression": expr},
+            }
+        ]
+
+    if ntype == "thematic_break":
+        return [{"object": "block", "type": "divider", "divider": {}}]
+
+    if ntype == "blank_line":
+        return []
+
+    # Fallback: try to extract text
+    raw = node.get("raw", "")
+    if raw:
+        return [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": _to_rich_text(raw.strip())},
+            }
+        ]
+    return []
+
+
 def _markdown_to_blocks(markdown: str) -> list[dict[str, Any]]:
-    """Convert markdown into basic Notion blocks for readable pages."""
-    lines = markdown.splitlines()
+    """Convert markdown into Notion blocks with full inline formatting and math."""
+    ast = _md_parser(_normalise_display_math(markdown or ""))
+    if not isinstance(ast, list):
+        ast = []
+
     blocks: list[dict[str, Any]] = []
-    paragraph_acc: list[str] = []
+    for node in ast:
+        blocks.extend(_ast_node_to_blocks(node))
 
-    def flush_paragraph() -> None:
-        if not paragraph_acc:
-            return
-        text = " ".join(line.strip() for line in paragraph_acc).strip()
-        if text:
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {"rich_text": _to_rich_text(text)},
-                }
-            )
-        paragraph_acc.clear()
-
-    i = 0
-    while i < len(lines):
-        line = lines[i].rstrip()
-        stripped = line.strip()
-
-        if not stripped:
-            flush_paragraph()
-            i += 1
-            continue
-
-        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
-        if heading:
-            flush_paragraph()
-            level = len(heading.group(1))
-            heading_text = heading.group(2).strip()
-            block_type = {1: "heading_1", 2: "heading_2", 3: "heading_3"}[level]
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": block_type,
-                    block_type: {"rich_text": _to_rich_text(heading_text)},
-                }
-            )
-            i += 1
-            continue
-
-        bullet = re.match(r"^[-*]\s+(.+)$", stripped)
-        if bullet:
-            flush_paragraph()
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "bulleted_list_item",
-                    "bulleted_list_item": {"rich_text": _to_rich_text(bullet.group(1).strip())},
-                }
-            )
-            i += 1
-            continue
-
-        numbered = re.match(r"^\d+\.\s+(.+)$", stripped)
-        if numbered:
-            flush_paragraph()
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "numbered_list_item",
-                    "numbered_list_item": {"rich_text": _to_rich_text(numbered.group(1).strip())},
-                }
-            )
-            i += 1
-            continue
-
-        quote = re.match(r"^>\s+(.+)$", stripped)
-        if quote:
-            flush_paragraph()
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "quote",
-                    "quote": {"rich_text": _to_rich_text(quote.group(1).strip())},
-                }
-            )
-            i += 1
-            continue
-
-        if stripped.startswith("```"):
-            flush_paragraph()
-            language = stripped[3:].strip() or "plain text"
-            code_lines: list[str] = []
-            i += 1
-            while i < len(lines):
-                candidate = lines[i].rstrip()
-                if candidate.strip().startswith("```"):
-                    i += 1
-                    break
-                code_lines.append(candidate)
-                i += 1
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "code",
-                    "code": {
-                        "language": language,
-                        "rich_text": _to_rich_text("\n".join(code_lines)),
-                    },
-                }
-            )
-            continue
-
-        paragraph_acc.append(stripped)
-        i += 1
-
-    flush_paragraph()
     if not blocks:
         blocks.append(
             {

@@ -10,7 +10,7 @@ import pytest
 
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
-from paper_assistant.notion import NotionPaper, sync_notion
+from paper_assistant.notion import NotionPaper, sync_notion, _markdown_to_blocks
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
 
@@ -299,3 +299,126 @@ async def test_sync_continues_when_audio_upload_fails(tmp_path):
     assert report.notion_created == 1
     assert report.warnings
     assert "Audio upload failed" in report.warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# _markdown_to_blocks conversion tests
+# ---------------------------------------------------------------------------
+
+
+def _find_block(blocks, block_type):
+    return [b for b in blocks if b["type"] == block_type]
+
+
+def _rich_text(block):
+    return block[block["type"]]["rich_text"]
+
+
+class TestMarkdownToBlocks:
+    def test_bold_annotation(self):
+        blocks = _markdown_to_blocks("Hello **bold** text")
+        rt = _rich_text(blocks[0])
+        bold_items = [r for r in rt if r.get("annotations", {}).get("bold")]
+        assert len(bold_items) == 1
+        assert bold_items[0]["text"]["content"] == "bold"
+
+    def test_italic_annotation(self):
+        blocks = _markdown_to_blocks("Hello *italic* text")
+        rt = _rich_text(blocks[0])
+        italic_items = [r for r in rt if r.get("annotations", {}).get("italic")]
+        assert len(italic_items) == 1
+        assert italic_items[0]["text"]["content"] == "italic"
+
+    def test_inline_code_annotation(self):
+        blocks = _markdown_to_blocks("Some `code` here")
+        rt = _rich_text(blocks[0])
+        code_items = [r for r in rt if r.get("annotations", {}).get("code")]
+        assert len(code_items) == 1
+        assert code_items[0]["text"]["content"] == "code"
+
+    def test_strikethrough_annotation(self):
+        blocks = _markdown_to_blocks("Some ~~deleted~~ text")
+        rt = _rich_text(blocks[0])
+        strike_items = [r for r in rt if r.get("annotations", {}).get("strikethrough")]
+        assert len(strike_items) == 1
+        assert strike_items[0]["text"]["content"] == "deleted"
+
+    def test_link(self):
+        blocks = _markdown_to_blocks("[click](https://example.com)")
+        rt = _rich_text(blocks[0])
+        link_items = [r for r in rt if r.get("text", {}).get("link")]
+        assert len(link_items) == 1
+        assert link_items[0]["text"]["link"]["url"] == "https://example.com"
+        assert link_items[0]["text"]["content"] == "click"
+
+    def test_inline_math(self):
+        blocks = _markdown_to_blocks("Energy is $E=mc^2$ here")
+        rt = _rich_text(blocks[0])
+        eq_items = [r for r in rt if r.get("type") == "equation"]
+        assert len(eq_items) == 1
+        assert eq_items[0]["equation"]["expression"] == "E=mc^2"
+
+    def test_display_math_block(self):
+        blocks = _markdown_to_blocks("Before\n\n$$\n\\sum x\n$$\n\nAfter")
+        eq_blocks = _find_block(blocks, "equation")
+        assert len(eq_blocks) == 1
+        assert eq_blocks[0]["equation"]["expression"] == "\\sum x"
+
+    def test_inline_display_math_no_stray_dollars(self):
+        """$$...$$ appearing inline should become a clean equation block (no $ in expression)."""
+        blocks = _markdown_to_blocks("Energy is $$E=mc^2$$ in physics")
+        eq_blocks = _find_block(blocks, "equation")
+        assert len(eq_blocks) == 1
+        assert eq_blocks[0]["equation"]["expression"] == "E=mc^2"
+        # No rich_text item should contain a bare "$" artefact
+        for b in blocks:
+            btype = b["type"]
+            if btype in ("paragraph",):
+                for rt in b[btype]["rich_text"]:
+                    content = rt.get("text", {}).get("content", "")
+                    assert content.strip() != "$"
+
+    def test_heading_levels(self):
+        blocks = _markdown_to_blocks("# H1\n## H2\n### H3")
+        assert blocks[0]["type"] == "heading_1"
+        assert blocks[1]["type"] == "heading_2"
+        assert blocks[2]["type"] == "heading_3"
+
+    def test_bullet_list(self):
+        blocks = _markdown_to_blocks("- one\n- two")
+        assert all(b["type"] == "bulleted_list_item" for b in blocks)
+        assert len(blocks) == 2
+
+    def test_numbered_list(self):
+        blocks = _markdown_to_blocks("1. first\n2. second")
+        assert all(b["type"] == "numbered_list_item" for b in blocks)
+        assert len(blocks) == 2
+
+    def test_code_block(self):
+        blocks = _markdown_to_blocks("```python\nprint('hi')\n```")
+        code_blocks = _find_block(blocks, "code")
+        assert len(code_blocks) == 1
+        assert code_blocks[0]["code"]["language"] == "python"
+
+    def test_quote_block(self):
+        blocks = _markdown_to_blocks("> a wise quote")
+        quote_blocks = _find_block(blocks, "quote")
+        assert len(quote_blocks) == 1
+
+    def test_mixed_bold_code(self):
+        blocks = _markdown_to_blocks("**bold with `code` inside**")
+        rt = _rich_text(blocks[0])
+        bold_items = [r for r in rt if r.get("annotations", {}).get("bold")]
+        code_items = [r for r in rt if r.get("annotations", {}).get("code")]
+        assert len(bold_items) >= 1
+        assert len(code_items) == 1
+
+    def test_empty_markdown_fallback(self):
+        blocks = _markdown_to_blocks("")
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "paragraph"
+
+    def test_divider(self):
+        blocks = _markdown_to_blocks("text\n\n---\n\nmore")
+        divider_blocks = _find_block(blocks, "divider")
+        assert len(divider_blocks) == 1
