@@ -35,6 +35,10 @@ class Config(BaseModel):
     arxiv_max_retries: int = 6
     arxiv_backoff_base_seconds: float = 2.0
     arxiv_backoff_cap_seconds: float = 90.0
+    notion_sync_enabled: bool = False
+    notion_token: str | None = None
+    notion_database_id: str | None = None
+    notion_archive_on_delete: bool = True
 
     @property
     def papers_dir(self) -> Path:
@@ -125,5 +129,26 @@ def load_config(**overrides: object) -> Config:
     arxiv_backoff_cap_seconds = os.getenv("PAPER_ASSIST_ARXIV_BACKOFF_CAP_SECONDS")
     if arxiv_backoff_cap_seconds is not None:
         kwargs["arxiv_backoff_cap_seconds"] = float(arxiv_backoff_cap_seconds)
+
+    # Notion sync
+    notion_sync_enabled = os.getenv("PAPER_ASSIST_NOTION_SYNC_ENABLED")
+    if notion_sync_enabled is not None:
+        kwargs["notion_sync_enabled"] = notion_sync_enabled.lower() in ("true", "1", "yes")
+
+    notion_token = os.getenv("PAPER_ASSIST_NOTION_TOKEN")
+    if notion_token:
+        kwargs["notion_token"] = notion_token
+
+    notion_database_id = os.getenv("PAPER_ASSIST_NOTION_DATABASE_ID")
+    if notion_database_id:
+        kwargs["notion_database_id"] = notion_database_id
+
+    notion_archive_on_delete = os.getenv("PAPER_ASSIST_NOTION_ARCHIVE_ON_DELETE")
+    if notion_archive_on_delete is not None:
+        kwargs["notion_archive_on_delete"] = notion_archive_on_delete.lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
     return Config(**kwargs)

@@ -45,6 +45,11 @@ class Paper(BaseModel):
     status: ProcessingStatus = ProcessingStatus.PENDING
     tags: list[str] = Field(default_factory=list)
     reading_status: ReadingStatus = ReadingStatus.UNREAD
+    local_modified_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    notion_modified_at: datetime | None = None
+    last_synced_at: datetime | None = None
+    archived_at: datetime | None = None
+    notion_page_id: str | None = None
 
     # File paths relative to the data directory
     pdf_path: str | None = None

@@ -31,6 +31,11 @@ class ReadingStatusRequest(BaseModel):
     reading_status: str
 
 
+class NotionSyncRequest(BaseModel):
+    paper_id: str | None = None
+    dry_run: bool = False
+
+
 def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     """Create the router with all web UI endpoints."""
     router = APIRouter()
@@ -342,11 +347,46 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 "date_added": p.date_added.isoformat(),
                 "status": p.status.value,
                 "reading_status": p.reading_status.value,
+                "archived": p.archived_at is not None,
+                "notion_page_id": p.notion_page_id,
                 "has_audio": p.audio_path is not None,
                 "tags": p.tags,
             }
             for p in papers
         ]
+
+    @router.get("/api/notion/sync/preview")
+    async def api_notion_sync_preview(paper: str | None = None):
+        """Preview Notion sync actions without writing changes."""
+        from paper_assistant.notion import sync_notion
+
+        try:
+            report = await sync_notion(
+                config=config,
+                storage=storage,
+                paper_id=paper,
+                dry_run=True,
+            )
+            return {"status": "ok", "report": report.to_dict()}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @router.post("/api/notion/sync")
+    async def api_notion_sync(req: NotionSyncRequest | None = None):
+        """Run Notion sync manually."""
+        from paper_assistant.notion import sync_notion
+
+        payload = req or NotionSyncRequest()
+        try:
+            report = await sync_notion(
+                config=config,
+                storage=storage,
+                paper_id=payload.paper_id,
+                dry_run=payload.dry_run,
+            )
+            return {"status": "ok", "report": report.to_dict()}
+        except Exception as e:
+            return {"error": str(e)}
 
     @router.get("/api/paper/{arxiv_id}/summary")
     async def api_get_summary(arxiv_id: str):

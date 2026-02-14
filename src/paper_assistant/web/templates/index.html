@@ -31,6 +31,20 @@
     <div id="import-status"></div>
 </details>
 
+<!-- Notion sync controls -->
+<details>
+    <summary>Sync with Notion</summary>
+    <form id="notion-sync-form">
+        <label for="notion-sync-paper">Paper filter (optional)</label>
+        <input type="text" id="notion-sync-paper" name="paper" placeholder="arXiv ID or Notion page ID">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="button" onclick="runNotionSync(true)">Preview Sync</button>
+            <button type="button" onclick="runNotionSync(false)">Run Sync</button>
+        </div>
+    </form>
+    <div id="notion-sync-status"></div>
+</details>
+
 {# Build a base query string that preserves all active filters/sort for link generation #}
 {% macro filter_url(param, value, exclude_param=None) %}
 {%- set parts = [] -%}
@@ -233,6 +247,47 @@ async function updateReadingStatus(select) {
     if (data.error) {
         alert(data.error);
         location.reload();
+    }
+}
+
+async function runNotionSync(dryRun) {
+    const paper = document.getElementById('notion-sync-paper')?.value?.trim();
+    const status = document.getElementById('notion-sync-status');
+    const mode = dryRun ? 'preview' : 'sync';
+    status.innerHTML = `<p aria-busy="true">Running Notion ${mode}...</p>`;
+
+    try {
+        let resp;
+        if (dryRun) {
+            const query = paper ? `?paper=${encodeURIComponent(paper)}` : '';
+            resp = await fetch(`/api/notion/sync/preview${query}`);
+        } else {
+            resp = await fetch('/api/notion/sync', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({paper_id: paper || null, dry_run: false}),
+            });
+        }
+        const data = await resp.json();
+        if (data.error) {
+            status.innerHTML = `<p class="error">${data.error}</p>`;
+            return;
+        }
+        const report = data.report || {};
+        status.innerHTML = `
+            <p>
+                Local created: ${report.local_created ?? 0}, updated: ${report.local_updated ?? 0}, archived: ${report.local_archived ?? 0}<br>
+                Notion created: ${report.notion_created ?? 0}, updated: ${report.notion_updated ?? 0}, archived: ${report.notion_archived ?? 0}<br>
+                Skipped: ${report.skipped ?? 0}
+            </p>
+            ${(report.warnings && report.warnings.length) ? `<p><strong>Warnings:</strong> ${report.warnings.join(' | ')}</p>` : ''}
+            ${(report.errors && report.errors.length) ? `<p class="error"><strong>Errors:</strong> ${report.errors.join(' | ')}</p>` : ''}
+        `;
+        if (!dryRun) {
+            setTimeout(() => location.reload(), 1200);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
     }
 }
 </script>

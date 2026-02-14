@@ -495,3 +495,47 @@ class TestApiReadingStatus:
         )
         assert resp.status_code == 200
         assert "error" in resp.json()
+
+
+class TestApiNotionSync:
+    def test_sync_preview(self, client):
+        class FakeReport:
+            def to_dict(self):
+                return {"dry_run": True, "local_created": 1}
+
+        with patch(
+            "paper_assistant.notion.sync_notion",
+            new_callable=AsyncMock,
+            return_value=FakeReport(),
+        ):
+            resp = client.get("/api/notion/sync/preview?paper=2503.10291")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["report"]["dry_run"] is True
+
+    def test_sync_apply(self, client):
+        class FakeReport:
+            def to_dict(self):
+                return {"dry_run": False, "notion_updated": 2}
+
+        with patch(
+            "paper_assistant.notion.sync_notion",
+            new_callable=AsyncMock,
+            return_value=FakeReport(),
+        ):
+            resp = client.post("/api/notion/sync", json={"paper_id": "2503.10291"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["report"]["notion_updated"] == 2
+
+    def test_sync_error(self, client):
+        with patch(
+            "paper_assistant.notion.sync_notion",
+            new_callable=AsyncMock,
+            side_effect=ValueError("missing notion token"),
+        ):
+            resp = client.post("/api/notion/sync", json={})
+        assert resp.status_code == 200
+        assert "error" in resp.json()

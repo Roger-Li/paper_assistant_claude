@@ -242,10 +242,12 @@ class TestStorageManager:
 
     def test_set_reading_status(self, storage, sample_paper):
         storage.add_paper(sample_paper)
+        before = storage.get_paper("2503.10291").local_modified_at
         result = storage.set_reading_status("2503.10291", ReadingStatus.READ)
         assert result == ReadingStatus.READ
         paper = storage.get_paper("2503.10291")
         assert paper.reading_status == ReadingStatus.READ
+        assert paper.local_modified_at >= before
 
     def test_set_reading_status_nonexistent(self, storage):
         with pytest.raises(KeyError):
@@ -283,3 +285,31 @@ class TestStorageManager:
         # Original storage should see the change on next read
         paper = storage.get_paper("2503.10291")
         assert "added-externally" in paper.tags
+
+    def test_save_summary_sets_modified_at(self, storage, sample_paper):
+        storage.add_paper(sample_paper)
+        fixed_time = datetime(2025, 3, 14, tzinfo=timezone.utc)
+        storage.save_summary("2503.10291", "# Summary\nHello", modified_at=fixed_time)
+        paper = storage.get_paper("2503.10291")
+        assert paper.local_modified_at == fixed_time
+
+    def test_set_archived_updates_flags(self, storage, sample_paper):
+        storage.add_paper(sample_paper)
+        storage.set_archived("2503.10291", True)
+        paper = storage.get_paper("2503.10291")
+        assert paper.reading_status == ReadingStatus.ARCHIVED
+        assert paper.archived_at is not None
+
+    def test_set_notion_fields(self, storage, sample_paper):
+        storage.add_paper(sample_paper)
+        now = datetime(2025, 3, 14, tzinfo=timezone.utc)
+        storage.set_notion_fields(
+            "2503.10291",
+            notion_page_id="notion-page-1",
+            notion_modified_at=now,
+            last_synced_at=now,
+        )
+        paper = storage.get_paper("2503.10291")
+        assert paper.notion_page_id == "notion-page-1"
+        assert paper.notion_modified_at == now
+        assert paper.last_synced_at == now

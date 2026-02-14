@@ -488,3 +488,59 @@ def regenerate_feed(ctx: click.Context) -> None:
 
     generate_feed(config, papers)
     console.print(f"[green]Feed regenerated:[/green] {config.feed_path}")
+
+
+@main.command("notion-sync")
+@click.option("--paper", "paper_id", help="Sync only one paper by arXiv ID or Notion page ID.")
+@click.option("--dry-run", is_flag=True, help="Preview sync actions without writing changes.")
+@click.pass_context
+def notion_sync(ctx: click.Context, paper_id: str | None, dry_run: bool) -> None:
+    """Run manual two-way sync between local storage and Notion."""
+    asyncio.run(_notion_sync(ctx.obj, paper_id, dry_run))
+
+
+async def _notion_sync(obj: dict, paper_id: str | None, dry_run: bool) -> None:
+    from paper_assistant.config import load_config
+    from paper_assistant.notion import sync_notion
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**obj)
+    config.ensure_dirs()
+    storage = StorageManager(config)
+
+    mode = "preview" if dry_run else "apply"
+    target = paper_id if paper_id else "all papers"
+    console.print(f"[bold]Notion sync ({mode})[/bold]: {target}")
+
+    try:
+        report = await sync_notion(
+            config=config,
+            storage=storage,
+            paper_id=paper_id,
+            dry_run=dry_run,
+        )
+    except Exception as e:
+        console.print(f"[red]Notion sync failed:[/red] {e}")
+        return
+
+    data = report.to_dict()
+    console.print(
+        "  Local   created={local_created} updated={local_updated} archived={local_archived}".format(
+            **data
+        )
+    )
+    console.print(
+        "  Notion  created={notion_created} updated={notion_updated} archived={notion_archived}".format(
+            **data
+        )
+    )
+    console.print(f"  Skipped: {data['skipped']}")
+
+    if data["warnings"]:
+        console.print("[yellow]Warnings:[/yellow]")
+        for warning in data["warnings"]:
+            console.print(f"  - {warning}")
+    if data["errors"]:
+        console.print("[red]Errors:[/red]")
+        for error in data["errors"]:
+            console.print(f"  - {error}")

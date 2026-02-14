@@ -71,6 +71,11 @@ class TestPaper:
         assert paper.summary_path is None
         assert paper.audio_path is None
         assert paper.date_added is not None
+        assert paper.local_modified_at is not None
+        assert paper.notion_modified_at is None
+        assert paper.last_synced_at is None
+        assert paper.archived_at is None
+        assert paper.notion_page_id is None
 
     def test_safe_title(self):
         meta = _make_metadata(title="Title: With Colon")
@@ -93,6 +98,21 @@ class TestPaper:
         data = paper.model_dump()
         restored = Paper.model_validate(data)
         assert restored.reading_status == ReadingStatus.READ
+
+    def test_notion_fields_serialization(self):
+        meta = _make_metadata()
+        now = datetime.now(timezone.utc)
+        paper = Paper(
+            metadata=meta,
+            notion_page_id="abc123",
+            notion_modified_at=now,
+            last_synced_at=now,
+        )
+        data = paper.model_dump()
+        restored = Paper.model_validate(data)
+        assert restored.notion_page_id == "abc123"
+        assert restored.notion_modified_at is not None
+        assert restored.last_synced_at is not None
 
 
 class TestPaperIndex:
