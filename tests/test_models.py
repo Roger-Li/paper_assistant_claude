@@ -7,6 +7,7 @@ from paper_assistant.models import (
     PaperIndex,
     PaperMetadata,
     ProcessingStatus,
+    ReadingStatus,
     sanitize_filename,
 )
 
@@ -80,6 +81,18 @@ class TestPaper:
         meta = _make_metadata()
         paper = Paper(metadata=meta, tags=["rl", "multimodal"])
         assert paper.tags == ["rl", "multimodal"]
+
+    def test_reading_status_default(self):
+        meta = _make_metadata()
+        paper = Paper(metadata=meta)
+        assert paper.reading_status == ReadingStatus.UNREAD
+
+    def test_reading_status_serialization(self):
+        meta = _make_metadata()
+        paper = Paper(metadata=meta, reading_status=ReadingStatus.READ)
+        data = paper.model_dump()
+        restored = Paper.model_validate(data)
+        assert restored.reading_status == ReadingStatus.READ
 
 
 class TestPaperIndex:

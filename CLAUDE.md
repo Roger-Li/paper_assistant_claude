@@ -1,122 +1,166 @@
-# Paper Assistant — Developer Guide
+# Paper Assistant — Coding Agent Playbook
 
-This file is for AI assistants and developers working on the codebase. For user-facing setup and usage, see [README.md](README.md).
+This guide is for coding agents and contributors making changes in this repository.
+For user-facing setup and usage, see [README.md](README.md).
 
-## Architecture
+## Purpose
 
-```
+Keep the project reliable while iterating quickly on:
+- arXiv ingestion
+- summarization
+- audio generation
+- local web UI/API
+- RSS feed generation
+
+## Code Map
+
+```text
 src/paper_assistant/
-├── cli.py          # Click CLI: add, import, list, show, remove, serve, regenerate-feed
-├── config.py       # Config from env vars / .env / CLI flags (Pydantic BaseModel)
-├── models.py       # Paper, PaperMetadata, PaperIndex, ProcessingStatus
-├── arxiv.py        # parse_arxiv_url(), fetch_metadata(), download_pdf() — arXiv Atom API
-├── pdf.py          # extract_text_from_pdf() — pymupdf4llm
-├── prompt.py       # System prompt template for Claude summarization
-├── summarizer.py   # summarize_paper_text/pdf(), parse_summary_sections(), find_one_pager(), format_summary_file()
-├── storage.py      # StorageManager (JSON index CRUD), make_*_filename() helpers
-├── tts.py          # prepare_text_for_tts(), text_to_speech() — edge-tts
-├── podcast.py      # generate_feed() — feedgen RSS generation
+├── cli.py          # Click commands and end-to-end pipelines
+├── config.py       # Config loading and directory management
+├── models.py       # Pydantic models, processing/reading status enums
+├── arxiv.py        # arXiv URL parsing, metadata fetch, PDF download
+├── pdf.py          # PDF text extraction
+├── prompt.py       # Claude prompt template
+├── summarizer.py   # Summarization orchestration and parsing helpers
+├── storage.py      # JSON index CRUD and file naming helpers
+├── tts.py          # Markdown-to-speech conversion
+├── podcast.py      # RSS feed generation
 └── web/
-    ├── app.py      # FastAPI app factory, mounts /static and /audio
-    ├── routes.py   # create_router() — page + API routes
-    ├── templates/  # Jinja2: index.html, paper.html
-    └── static/     # CSS (pico.css), JS (marked.js, KaTeX)
+    ├── app.py      # FastAPI app factory
+    ├── routes.py   # HTML and JSON endpoints
+    ├── templates/  # Jinja templates
+    └── static/     # CSS and JS assets
 ```
 
-## Data Directory
+## Operational Model
 
-Default: `~/.paper-assistant/` (override: `PAPER_ASSIST_DATA_DIR`).
+### Data source of truth
 
-```
+`index.json` is the only state database. `StorageManager` re-reads from disk each call to support mixed CLI + web usage.
+
+### Data directory
+
+Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
+
+```text
 ~/.paper-assistant/
-├── papers/     # [Paper][{arxiv_id}] {title}.md
-├── audio/      # {arxiv_id}.mp3
-├── pdfs/       # {arxiv_id}.pdf
-├── index.json  # Source of truth for all paper metadata
-└── feed.xml    # iTunes-compatible RSS podcast feed
+├── papers/
+├── audio/
+├── pdfs/
+├── index.json
+└── feed.xml
 ```
 
-## Conventions & Gotchas
+### Platform stance
 
-### Async everywhere
-All I/O modules are async (httpx, edge-tts, anthropic SDK). CLI bridges with `asyncio.run()`.
+- Primary runtime: macOS
+- Linux supported with caveats (notably clipboard and iCloud behavior)
 
-### JSON index — no database
-`index.json` is the single source of truth. `StorageManager` re-reads from disk on each access to support concurrent CLI/web usage. No SQLite.
+## Critical Invariants
 
-### Re-fetch after save_summary (critical)
-`storage.save_summary()` updates `summary_path` on the paper object it fetches internally. The caller's local `paper` variable is a different instance. Always do:
-```python
-storage.save_summary(arxiv_id, content)
-paper = storage.get_paper(arxiv_id)  # re-fetch before further mutations
-```
+1. Re-fetch paper after `save_summary`.
+   - `storage.save_summary()` updates a different paper instance internally.
+   - Always call `paper = storage.get_paper(arxiv_id)` before further mutations.
 
-### Audio = full summary verbatim
-TTS converts the **full** markdown summary to speech — not the one-pager section. `prepare_text_for_tts()` strips markdown formatting for natural speech but does not truncate content.
+2. Keep `index.json` and file paths consistent.
+   - `pdf_path`, `summary_path`, and `audio_path` are stored relative to `data_dir`.
 
-### `from __future__ import annotations`
-Used in most modules. Pydantic models used as FastAPI request bodies **must** be at module level (not inside functions), otherwise `typing.get_type_hints()` fails and FastAPI returns 422.
+3. Preserve async boundaries.
+   - Network and TTS paths are async.
+   - CLI commands must bridge with `asyncio.run()` only at command entry points.
 
-### iCloud sync
-Audio files auto-copy to `~/Library/Mobile Documents/com~apple~CloudDocs/Paper Assistant/`. Controlled by `PAPER_ASSIST_ICLOUD_SYNC` env var.
+4. TTS speaks full markdown summary content.
+   - Audio generation uses full markdown, not only one-pager section.
 
-### Config resolution order
-CLI flags > env vars > .env file > defaults.
+5. FastAPI request models must remain at module level.
+   - With `from __future__ import annotations`, nested request-body models can break type-hint resolution.
 
-## Web API Endpoints
+6. Feed/audio failures should degrade gracefully.
+   - Summary import/add should still succeed when TTS or feed regeneration fails; report warning state.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Paper list dashboard (HTML) |
-| `GET` | `/paper/{arxiv_id}` | Paper detail page (HTML) |
-| `POST` | `/api/add` | Add paper via full pipeline (JSON) |
-| `POST` | `/api/import` | Import pre-generated summary (JSON) |
-| `POST` | `/api/paper/{arxiv_id}/tags` | Add tags (JSON body: `{"tags": [...]}`) |
-| `DELETE` | `/api/paper/{arxiv_id}/tags/{tag}` | Remove a tag |
-| `DELETE` | `/api/paper/{arxiv_id}` | Delete a paper |
-| `GET` | `/api/papers` | List papers (JSON, `?tag=` filter) |
-| `GET` | `/feed.xml` | RSS podcast feed |
-| `GET` | `/audio/{filename}` | Static audio files |
+## Config Contracts
 
-## Testing
+Supported env vars (actual behavior in `config.py`):
+- `ANTHROPIC_API_KEY` (required)
+- `PAPER_ASSIST_DATA_DIR`
+- `PAPER_ASSIST_MODEL`
+- `PAPER_ASSIST_TTS_VOICE`
+- `PAPER_ASSIST_ICLOUD_SYNC`
+- `PAPER_ASSIST_ICLOUD_DIR`
+
+Resolution order:
+- CLI override -> env var -> `.env` -> default
+
+## API Surface (Current)
+
+HTML:
+- `GET /`
+- `GET /paper/{arxiv_id}`
+
+JSON:
+- `POST /api/add`
+- `POST /api/import`
+- `POST /api/paper/{arxiv_id}/tags`
+- `DELETE /api/paper/{arxiv_id}/tags/{tag}`
+- `DELETE /api/paper/{arxiv_id}`
+- `GET /api/paper/{arxiv_id}/summary`
+- `PUT /api/paper/{arxiv_id}/summary`
+- `PUT /api/paper/{arxiv_id}/reading-status`
+- `GET /api/papers` (supports `?sort=date_added|title|tag|arxiv_id&order=asc|desc&status=...&reading_status=...`)
+- `GET /feed.xml`
+
+## Agent Workflow
+
+When implementing changes, follow this order:
+
+1. Confirm behavior in source before editing.
+2. Change minimal modules necessary.
+3. Keep storage/index invariants intact.
+4. Update or add tests for changed behavior.
+5. Update docs when user-facing or agent-facing behavior changes.
+
+If touching pipelines (`add`, `import`, `serve`), verify:
+- successful path
+- duplicate existing paper path
+- partial-failure behavior (TTS/feed warnings)
+
+## Testing Expectations
+
+Run the full suite for meaningful changes:
 
 ```bash
 pytest tests/
 ```
 
-Tests cover: models, arxiv URL parsing, summarizer section parsing, TTS text preparation, storage CRUD, and web API endpoints. Web tests use `FastAPI.TestClient` with mocked async dependencies.
+Favor targeted additions in:
+- `tests/test_storage.py` for index/path invariants
+- `tests/test_summarizer.py` for section parsing behavior
+- `tests/test_web_*.py` for route contracts
+- `tests/test_cli_*.py` if command behavior changes
 
-## TODO
+## Definition of Done (Required)
 
-### 1. Data migration / portability
-Add a CLI command to copy the entire data directory (index.json + papers/ + audio/ + pdfs/) to a new location. Use case: move data to a different machine, back up to external drive, or reorganize folder structure.
-```
-paper-assist export --to /path/to/new/location
-```
-Should copy all files referenced in `index.json`, update paths if needed, and validate the result.
+A task is complete only when all are true:
 
-### 2. RSS feed / private podcast (not working end-to-end)
-The podcast feed (`feed.xml`) is generated but **not usable from iPhone podcast apps** because:
-- `podcast_base_url` defaults to `http://127.0.0.1:8877` — audio URLs in the feed point to localhost
-- Podcast apps on iPhone can't reach `127.0.0.1` on the Mac
-- Audio files are already synced to iCloud via the `icloud_sync` feature, but podcast apps need an HTTP URL
+- Behavior change is implemented and matches requested scope.
+- No critical invariant is violated.
+- Tests were added/updated where behavior changed.
+- Test suite (or relevant subset, if constrained) was run and results reported.
+- `README.md` is updated for user-facing changes.
+- `CLAUDE.md` is updated for agent-facing workflow/invariant changes.
+- Error messages remain actionable and do not silently hide hard failures.
 
-**Options to investigate:**
-- Serve over local network (use Mac's LAN IP instead of localhost, e.g. `http://192.168.x.x:8877`) — works on same WiFi but breaks when IP changes
-- Tailscale / ngrok tunnel for a stable URL
-- Host audio on S3/Cloudflare R2 and generate feed with public URLs
-- Use Apple Shortcuts or a local podcast app that reads from iCloud files directly
+## Prioritized Roadmap (Trimmed)
 
-### 3. Batch import
-Support importing multiple papers at once. Either:
-- A text file with one arXiv URL per line + corresponding markdown files
-- A directory scan that finds markdown files with arXiv IDs in the name
+1. ~~Minor improvement - sorting entries by tag/date added/title; enable editing existing summaries to override and regenerate audio files.~~ (Done)
+2. `regenerate-audio` command (`single` and `--all`) for imported/legacy entries.
+3. Reachable podcast feed for phone clients (LAN/tunnel/hosted URL strategy).
+4. Batch import for multiple arXiv entries + summary files.
+5. Search across titles/tags/summaries.
 
-### 4. Regenerate audio for existing papers
-Add `paper-assist regenerate-audio <arxiv_id>` (or `--all`) to re-generate audio for papers that were imported with `--skip-audio` or when TTS voice/rate settings change.
+## Non-Goals (Current)
 
-### 5. Search
-Full-text search across paper summaries (title, abstract, content). Could be a CLI command (`paper-assist search "attention mechanism"`) and a search bar in the web UI. Since the index is JSON-based, a simple substring/regex search over summary files would work for the current scale.
-
-### 6. Paper notes / annotations
-Allow adding personal notes to papers beyond tags. Could be a separate markdown file or a `notes` field in the index.
+- Moving from JSON index to SQL database.
+- Over-engineering deployment workflows for cloud hosting.
+- Expanding API surface without matching test coverage.

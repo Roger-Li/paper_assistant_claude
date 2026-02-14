@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
 from paper_assistant.storage import (
     StorageManager,
     make_audio_filename,
@@ -186,6 +186,90 @@ class TestStorageManager:
         paper = storage2.get_paper("2503.10291")
         assert paper is not None
         assert paper.tags == ["test"]
+
+    def test_list_papers_sort_by_title(self, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="Zebra"))
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="Apple"))
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        papers = storage.list_papers(sort_by="title", reverse=False)
+        assert papers[0].metadata.title == "Apple"
+        assert papers[1].metadata.title == "Zebra"
+
+    def test_list_papers_sort_by_title_reverse(self, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="Zebra"))
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="Apple"))
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        papers = storage.list_papers(sort_by="title", reverse=True)
+        assert papers[0].metadata.title == "Zebra"
+        assert papers[1].metadata.title == "Apple"
+
+    def test_list_papers_sort_by_tag(self, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="A"), tags=["rl"])
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="B"), tags=["cv"])
+        p3 = Paper(metadata=_make_metadata(arxiv_id="2501.00003", title="C"), tags=[])
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        storage.add_paper(p3)
+        papers = storage.list_papers(sort_by="tag", reverse=False)
+        # Empty tag sorts first (""), then "cv", then "rl"
+        assert papers[0].metadata.arxiv_id == "2501.00003"
+        assert papers[1].metadata.arxiv_id == "2501.00002"
+        assert papers[2].metadata.arxiv_id == "2501.00001"
+
+    def test_list_papers_sort_with_tag_filter(self, storage):
+        """Sorting and tag filtering should work together."""
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="Zebra"), tags=["rl"])
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="Apple"), tags=["rl"])
+        p3 = Paper(metadata=_make_metadata(arxiv_id="2501.00003", title="Mango"), tags=["cv"])
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        storage.add_paper(p3)
+        papers = storage.list_papers(tag="rl", sort_by="title", reverse=False)
+        assert len(papers) == 2
+        assert papers[0].metadata.title == "Apple"
+        assert papers[1].metadata.title == "Zebra"
+
+    def test_list_papers_sort_by_arxiv_id(self, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2503.00100", title="A"))
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="B"))
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        papers = storage.list_papers(sort_by="arxiv_id", reverse=False)
+        assert papers[0].metadata.arxiv_id == "2501.00001"
+        assert papers[1].metadata.arxiv_id == "2503.00100"
+
+    def test_set_reading_status(self, storage, sample_paper):
+        storage.add_paper(sample_paper)
+        result = storage.set_reading_status("2503.10291", ReadingStatus.READ)
+        assert result == ReadingStatus.READ
+        paper = storage.get_paper("2503.10291")
+        assert paper.reading_status == ReadingStatus.READ
+
+    def test_set_reading_status_nonexistent(self, storage):
+        with pytest.raises(KeyError):
+            storage.set_reading_status("9999.99999", ReadingStatus.READ)
+
+    def test_list_papers_filter_reading_status(self, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            reading_status=ReadingStatus.UNREAD,
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            reading_status=ReadingStatus.READ,
+        )
+        p3 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00003", title="C"),
+            reading_status=ReadingStatus.ARCHIVED,
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        storage.add_paper(p3)
+        unread = storage.list_papers(reading_status=ReadingStatus.UNREAD)
+        assert len(unread) == 1
+        assert unread[0].metadata.arxiv_id == "2501.00001"
 
     def test_index_rereads_from_disk(self, storage, tmp_path):
         """StorageManager should re-read index to support concurrent CLI/web usage."""

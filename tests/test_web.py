@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
 from paper_assistant.storage import StorageManager
 from paper_assistant.web.app import create_app
 
@@ -89,6 +89,23 @@ class TestIndexPage:
         assert "Paper A" in resp.text
         assert "Paper B" not in resp.text
 
+    def test_sort_by_title(self, client, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="Zebra Paper"), tags=[])
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="Apple Paper"), tags=[])
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/?sort=title&order=asc")
+        assert resp.status_code == 200
+        apple_pos = resp.text.index("Apple Paper")
+        zebra_pos = resp.text.index("Zebra Paper")
+        assert apple_pos < zebra_pos
+
+    def test_sort_invalid_field_defaults(self, client, paper_in_index):
+        """Invalid sort field should fall back to date_added."""
+        resp = client.get("/?sort=invalid_field")
+        assert resp.status_code == 200
+        assert "2503.10291" in resp.text
+
 
 class TestPaperDetailPage:
     def test_existing_paper(self, client, paper_in_index):
@@ -139,6 +156,16 @@ class TestApiListPapers:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["arxiv_id"] == "2501.00001"
+
+    def test_sort_by_title(self, client, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="Zebra"), tags=[])
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00002", title="Apple"), tags=[])
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/api/papers?sort=title&order=asc")
+        data = resp.json()
+        assert data[0]["title"] == "Apple"
+        assert data[1]["title"] == "Zebra"
 
 
 class TestApiTags:
@@ -239,3 +266,213 @@ class TestApiImport:
             json={"url": "https://arxiv.org/abs/2503.10291"},
         )
         assert resp.status_code == 422
+
+
+class TestApiUpdateSummary:
+    def test_update_summary_success(self, client, storage, config):
+        paper = Paper(metadata=_make_metadata(), status=ProcessingStatus.COMPLETE)
+        storage.add_paper(paper)
+        storage.save_summary("2503.10291", "# Old Summary\nOld content")
+
+        with (
+            patch("paper_assistant.tts.text_to_speech", new_callable=AsyncMock),
+            patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.put(
+                "/api/paper/2503.10291/summary",
+                json={"markdown": "# New Summary\nNew content", "regenerate_audio": True},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+
+        # Verify file was updated
+        paper = storage.get_paper("2503.10291")
+        summary_path = config.data_dir / paper.summary_path
+        assert "New content" in summary_path.read_text()
+
+    def test_update_summary_skip_audio(self, client, storage, config):
+        paper = Paper(metadata=_make_metadata(), status=ProcessingStatus.COMPLETE)
+        storage.add_paper(paper)
+        storage.save_summary("2503.10291", "# Old\nOld")
+
+        with patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"):
+            resp = client.put(
+                "/api/paper/2503.10291/summary",
+                json={"markdown": "# New\nNew", "regenerate_audio": False},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_update_summary_nonexistent_paper(self, client):
+        resp = client.put(
+            "/api/paper/9999.99999/summary",
+            json={"markdown": "content"},
+        )
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+    def test_update_summary_empty_markdown(self, client, storage):
+        paper = Paper(metadata=_make_metadata(), status=ProcessingStatus.COMPLETE)
+        storage.add_paper(paper)
+        storage.save_summary("2503.10291", "# Old\nOld")
+
+        resp = client.put(
+            "/api/paper/2503.10291/summary",
+            json={"markdown": "   ", "regenerate_audio": False},
+        )
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+    def test_update_summary_audio_failure_graceful(self, client, storage, config):
+        """Audio failure should not prevent summary from being saved."""
+        paper = Paper(metadata=_make_metadata(), status=ProcessingStatus.COMPLETE)
+        storage.add_paper(paper)
+        storage.save_summary("2503.10291", "# Old\nOld")
+
+        with (
+            patch(
+                "paper_assistant.tts.text_to_speech",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("TTS broke"),
+            ),
+            patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.put(
+                "/api/paper/2503.10291/summary",
+                json={"markdown": "# New\nNew content", "regenerate_audio": True},
+            )
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "warning" in data
+
+        # Summary should still be saved
+        paper = storage.get_paper("2503.10291")
+        summary_path = config.data_dir / paper.summary_path
+        assert "New content" in summary_path.read_text()
+
+    def test_get_raw_summary(self, client, storage):
+        paper = Paper(metadata=_make_metadata(), status=ProcessingStatus.COMPLETE)
+        storage.add_paper(paper)
+        storage.save_summary("2503.10291", "# One-Pager\nSummary body text")
+
+        resp = client.get("/api/paper/2503.10291/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "Summary body text" in data["markdown"]
+
+    def test_get_summary_no_paper(self, client):
+        resp = client.get("/api/paper/9999.99999/summary")
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+
+class TestApiSortByArxivId:
+    def test_sort_by_arxiv_id(self, client, storage):
+        p1 = Paper(metadata=_make_metadata(arxiv_id="2503.00100", title="A"), tags=[])
+        p2 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="B"), tags=[])
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/api/papers?sort=arxiv_id&order=asc")
+        data = resp.json()
+        assert data[0]["arxiv_id"] == "2501.00001"
+        assert data[1]["arxiv_id"] == "2503.00100"
+
+
+class TestStatusFilter:
+    def test_index_status_filter(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="Complete Paper"),
+            status=ProcessingStatus.COMPLETE,
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="Pending Paper"),
+            status=ProcessingStatus.PENDING,
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/?status=complete")
+        assert resp.status_code == 200
+        assert "Complete Paper" in resp.text
+        assert "Pending Paper" not in resp.text
+
+    def test_api_status_filter(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            status=ProcessingStatus.COMPLETE,
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            status=ProcessingStatus.PENDING,
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/api/papers?status=complete")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["arxiv_id"] == "2501.00001"
+
+    def test_index_reading_status_filter(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="Unread Paper"),
+            reading_status=ReadingStatus.UNREAD,
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="Read Paper"),
+            reading_status=ReadingStatus.READ,
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/?reading_status=unread")
+        assert resp.status_code == 200
+        assert "Unread Paper" in resp.text
+        assert "Read Paper" not in resp.text
+
+    def test_api_reading_status_filter(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            reading_status=ReadingStatus.UNREAD,
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            reading_status=ReadingStatus.READ,
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        resp = client.get("/api/papers?reading_status=unread")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["arxiv_id"] == "2501.00001"
+
+    def test_api_response_includes_reading_status(self, client, paper_in_index):
+        resp = client.get("/api/papers")
+        data = resp.json()
+        assert data[0]["reading_status"] == "unread"
+
+
+class TestApiReadingStatus:
+    def test_set_reading_status(self, client, paper_in_index):
+        resp = client.put(
+            "/api/paper/2503.10291/reading-status",
+            json={"reading_status": "read"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["reading_status"] == "read"
+
+    def test_set_invalid_reading_status(self, client, paper_in_index):
+        resp = client.put(
+            "/api/paper/2503.10291/reading-status",
+            json={"reading_status": "invalid"},
+        )
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+    def test_set_reading_status_nonexistent_paper(self, client):
+        resp = client.put(
+            "/api/paper/9999.99999/reading-status",
+            json={"reading_status": "read"},
+        )
+        assert resp.status_code == 200
+        assert "error" in resp.json()

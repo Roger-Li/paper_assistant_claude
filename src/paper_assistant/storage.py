@@ -11,6 +11,7 @@ from paper_assistant.models import (
     Paper,
     PaperIndex,
     ProcessingStatus,
+    ReadingStatus,
     sanitize_filename,
 )
 
@@ -76,6 +77,7 @@ class StorageManager:
     def list_papers(
         self,
         status: ProcessingStatus | None = None,
+        reading_status: ReadingStatus | None = None,
         tag: str | None = None,
         sort_by: str = "date_added",
         reverse: bool = True,
@@ -87,10 +89,22 @@ class StorageManager:
         if status is not None:
             papers = [p for p in papers if p.status == status]
 
+        if reading_status is not None:
+            papers = [p for p in papers if p.reading_status == reading_status]
+
         if tag is not None:
             papers = [p for p in papers if tag in p.tags]
 
-        papers.sort(key=lambda p: getattr(p, sort_by, p.date_added), reverse=reverse)
+        def sort_key(p: Paper) -> object:
+            if sort_by == "title":
+                return p.metadata.title.lower()
+            if sort_by == "tag":
+                return p.tags[0].lower() if p.tags else ""
+            if sort_by == "arxiv_id":
+                return p.metadata.arxiv_id
+            return getattr(p, sort_by, p.date_added)
+
+        papers.sort(key=sort_key, reverse=reverse)
         return papers
 
     def delete_paper(self, arxiv_id: str, delete_files: bool = True) -> bool:
@@ -138,6 +152,15 @@ class StorageManager:
             paper.tags.remove(tag)
         self.save_index()
         return paper.tags
+
+    def set_reading_status(self, arxiv_id: str, reading_status: ReadingStatus) -> ReadingStatus:
+        """Set the reading status of a paper. Returns the new reading status."""
+        paper = self.get_paper(arxiv_id)
+        if paper is None:
+            raise KeyError(f"Paper {arxiv_id} not in index")
+        paper.reading_status = reading_status
+        self.save_index()
+        return paper.reading_status
 
     def save_summary(self, arxiv_id: str, content: str) -> Path:
         """Write summary markdown file and update paper's summary_path."""

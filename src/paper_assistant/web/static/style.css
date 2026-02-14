@@ -85,6 +85,21 @@ details {
     opacity: 0.7;
 }
 
+/* Inline reading status dropdown */
+.reading-status-select {
+    padding: 2px 4px;
+    font-size: 0.8rem;
+    margin: 0;
+    width: auto;
+    display: inline;
+}
+
+/* Edit panel */
+#edit-markdown {
+    width: 100%;
+    resize: vertical;
+}
+
 /* Footer */
 footer {
     margin-top: 3rem;

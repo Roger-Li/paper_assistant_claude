@@ -18,6 +18,12 @@ class ProcessingStatus(str, Enum):
     ERROR = "error"
 
 
+class ReadingStatus(str, Enum):
+    UNREAD = "unread"
+    READ = "read"
+    ARCHIVED = "archived"
+
+
 class PaperMetadata(BaseModel):
     """Core metadata fetched from arXiv."""
 
@@ -38,6 +44,7 @@ class Paper(BaseModel):
     date_added: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: ProcessingStatus = ProcessingStatus.PENDING
     tags: list[str] = Field(default_factory=list)
+    reading_status: ReadingStatus = ReadingStatus.UNREAD
 
     # File paths relative to the data directory
     pdf_path: str | None = None

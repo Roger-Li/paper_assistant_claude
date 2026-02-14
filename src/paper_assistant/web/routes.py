@@ -24,15 +24,56 @@ class TagsRequest(BaseModel):
     tags: list[str]
 
 
+class UpdateSummaryRequest(BaseModel):
+    markdown: str
+    regenerate_audio: bool = True
+
+
+class ReadingStatusRequest(BaseModel):
+    reading_status: str
+
+
 def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     """Create the router with all web UI endpoints."""
     router = APIRouter()
     storage = StorageManager(config)
 
     @router.get("/", response_class=HTMLResponse)
-    async def index(request: Request, tag: str | None = None):
-        """Dashboard: list all papers with optional tag filter."""
-        papers = storage.list_papers(tag=tag)
+    async def index(
+        request: Request,
+        tag: str | None = None,
+        status: str | None = None,
+        reading_status: str | None = None,
+        sort: str = "date_added",
+        order: str = "desc",
+    ):
+        """Dashboard: list all papers with optional filters and sorting."""
+        from paper_assistant.models import ProcessingStatus, ReadingStatus
+
+        valid_sorts = {"date_added", "title", "tag", "arxiv_id"}
+        if sort not in valid_sorts:
+            sort = "date_added"
+        reverse = order != "asc"
+
+        # Convert string params to enums (ignore invalid values)
+        status_enum = None
+        if status:
+            try:
+                status_enum = ProcessingStatus(status)
+            except ValueError:
+                pass
+
+        reading_status_enum = None
+        if reading_status:
+            try:
+                reading_status_enum = ReadingStatus(reading_status)
+            except ValueError:
+                pass
+
+        papers = storage.list_papers(
+            tag=tag, status=status_enum, reading_status=reading_status_enum,
+            sort_by=sort, reverse=reverse,
+        )
         all_tags = sorted(
             {t for p in storage.list_papers() for t in p.tags}
         )
@@ -44,6 +85,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 "all_tags": all_tags,
                 "active_tag": tag,
                 "total": len(papers),
+                "active_sort": sort,
+                "active_order": order,
+                "active_status": status,
+                "active_reading_status": reading_status,
+                "all_statuses": [s.value for s in ProcessingStatus],
+                "all_reading_statuses": [rs.value for rs in ReadingStatus],
             },
         )
 
@@ -241,10 +288,55 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"status": "ok"}
         return {"error": f"Paper {arxiv_id} not found"}
 
+    @router.put("/api/paper/{arxiv_id}/reading-status")
+    async def api_set_reading_status(arxiv_id: str, req: ReadingStatusRequest):
+        """Set the reading status of a paper."""
+        from paper_assistant.models import ReadingStatus
+
+        try:
+            rs = ReadingStatus(req.reading_status)
+        except ValueError:
+            return {"error": f"Invalid reading status: {req.reading_status}"}
+        try:
+            result = storage.set_reading_status(arxiv_id, rs)
+            return {"status": "ok", "reading_status": result.value}
+        except KeyError:
+            return {"error": f"Paper {arxiv_id} not found"}
+
     @router.get("/api/papers")
-    async def api_list_papers(tag: str | None = None):
+    async def api_list_papers(
+        tag: str | None = None,
+        status: str | None = None,
+        reading_status: str | None = None,
+        sort: str = "date_added",
+        order: str = "desc",
+    ):
         """JSON API: list all papers."""
-        papers = storage.list_papers(tag=tag)
+        from paper_assistant.models import ProcessingStatus, ReadingStatus
+
+        valid_sorts = {"date_added", "title", "tag", "arxiv_id"}
+        if sort not in valid_sorts:
+            sort = "date_added"
+        reverse = order != "asc"
+
+        status_enum = None
+        if status:
+            try:
+                status_enum = ProcessingStatus(status)
+            except ValueError:
+                pass
+
+        reading_status_enum = None
+        if reading_status:
+            try:
+                reading_status_enum = ReadingStatus(reading_status)
+            except ValueError:
+                pass
+
+        papers = storage.list_papers(
+            tag=tag, status=status_enum, reading_status=reading_status_enum,
+            sort_by=sort, reverse=reverse,
+        )
         return [
             {
                 "arxiv_id": p.metadata.arxiv_id,
@@ -252,11 +344,112 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 "authors": p.metadata.authors,
                 "date_added": p.date_added.isoformat(),
                 "status": p.status.value,
+                "reading_status": p.reading_status.value,
                 "has_audio": p.audio_path is not None,
                 "tags": p.tags,
             }
             for p in papers
         ]
+
+    @router.get("/api/paper/{arxiv_id}/summary")
+    async def api_get_summary(arxiv_id: str):
+        """Get the raw markdown summary body for editing."""
+        paper = storage.get_paper(arxiv_id)
+        if paper is None:
+            return {"error": f"Paper {arxiv_id} not found"}
+
+        if not paper.summary_path:
+            return {"error": "No summary available", "markdown": ""}
+
+        summary_path = config.data_dir / paper.summary_path
+        if not summary_path.exists():
+            return {"error": "Summary file missing", "markdown": ""}
+
+        raw = summary_path.read_text(encoding="utf-8")
+
+        # Strip YAML front matter and title/authors header block
+        # (format_summary_file regenerates these on save)
+        body = raw
+        if body.startswith("---"):
+            end_idx = body.find("---", 3)
+            if end_idx != -1:
+                body = body[end_idx + 3 :].lstrip()
+
+        hr_idx = body.find("\n---\n")
+        if hr_idx != -1 and hr_idx < 400:
+            body = body[hr_idx + 5 :].lstrip()
+
+        return {"markdown": body}
+
+    @router.put("/api/paper/{arxiv_id}/summary")
+    async def api_update_summary(arxiv_id: str, req: UpdateSummaryRequest):
+        """Update a paper's summary and optionally regenerate audio."""
+        from paper_assistant.models import ProcessingStatus
+        from paper_assistant.podcast import generate_feed
+        from paper_assistant.storage import make_audio_filename
+        from paper_assistant.summarizer import (
+            SummarizationResult,
+            find_one_pager,
+            format_summary_file,
+            parse_summary_sections,
+        )
+        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
+
+        paper = storage.get_paper(arxiv_id)
+        if paper is None:
+            return {"error": f"Paper {arxiv_id} not found"}
+
+        if not req.markdown.strip():
+            return {"error": "Summary cannot be empty"}
+
+        # Save the updated summary
+        try:
+            sections = parse_summary_sections(req.markdown)
+            one_pager = find_one_pager(sections)
+            result = SummarizationResult(
+                full_markdown=req.markdown,
+                one_pager=one_pager,
+                sections=sections,
+                model_used=paper.model_used or "manual-edit",
+            )
+            summary_content = format_summary_file(paper.metadata, result)
+            storage.save_summary(arxiv_id, summary_content)
+            paper = storage.get_paper(arxiv_id)  # Re-fetch after save_summary
+        except Exception as e:
+            return {"error": f"Failed to save summary: {e}"}
+
+        # Optionally regenerate audio (graceful degradation)
+        audio_warning = None
+        if req.regenerate_audio:
+            try:
+                tts_text = prepare_text_for_tts(
+                    req.markdown, paper.metadata.title, paper.metadata.authors
+                )
+                audio_path = config.audio_dir / make_audio_filename(arxiv_id)
+                await text_to_speech(
+                    tts_text, audio_path, config.tts_voice, config.tts_rate
+                )
+                paper.audio_path = f"audio/{make_audio_filename(arxiv_id)}"
+                paper.status = ProcessingStatus.COMPLETE
+                storage.add_paper(paper)
+            except Exception as e:
+                audio_warning = f"Summary saved but audio regeneration failed: {e}"
+        elif paper.audio_path:
+            # Preserve COMPLETE status when skipping audio regen for papers that had audio
+            paper.status = ProcessingStatus.COMPLETE
+            storage.add_paper(paper)
+
+        # Regenerate feed (non-critical)
+        try:
+            all_papers = storage.list_papers()
+            generate_feed(config, all_papers)
+        except Exception:
+            pass
+
+        response = {"status": "ok", "arxiv_id": arxiv_id, "title": paper.metadata.title}
+        if audio_warning:
+            response["warning"] = audio_warning
+        return response
 
     @router.get("/feed.xml")
     async def rss_feed():

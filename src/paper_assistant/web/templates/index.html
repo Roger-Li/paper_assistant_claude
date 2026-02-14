@@ -31,13 +31,64 @@
     <div id="import-status"></div>
 </details>
 
+{# Build a base query string that preserves all active filters/sort for link generation #}
+{% macro filter_url(param, value, exclude_param=None) %}
+{%- set parts = [] -%}
+{%- if param != "tag" and active_tag %}{% set _ = parts.append("tag=" + active_tag) %}{% endif -%}
+{%- if param != "status" and active_status %}{% set _ = parts.append("status=" + active_status) %}{% endif -%}
+{%- if param != "reading_status" and active_reading_status %}{% set _ = parts.append("reading_status=" + active_reading_status) %}{% endif -%}
+{%- if param != "sort" and active_sort != "date_added" %}{% set _ = parts.append("sort=" + active_sort) %}{% endif -%}
+{%- if param != "order" and active_order != "desc" %}{% set _ = parts.append("order=" + active_order) %}{% endif -%}
+{%- if value %}{% set _ = parts.append(param + "=" + value) %}{% endif -%}
+/{% if parts %}?{{ parts | join("&") }}{% endif %}
+{%- endmacro %}
+
 <!-- Tag filter -->
 {% if all_tags %}
 <p>
     <strong>Filter by tag:</strong>
-    <a href="/" {% if not active_tag %}class="contrast"{% endif %}>All</a>
+    <a href="{{ filter_url('tag', '') }}" {% if not active_tag %}class="contrast"{% endif %}>All</a>
     {% for tag in all_tags %}
-    &middot; <a href="/?tag={{ tag }}" {% if active_tag == tag %}class="contrast"{% endif %}>{{ tag }}</a>
+    &middot; <a href="{{ filter_url('tag', tag) }}" {% if active_tag == tag %}class="contrast"{% endif %}>{{ tag }}</a>
+    {% endfor %}
+</p>
+{% endif %}
+
+<!-- Processing status filter -->
+<p>
+    <strong>Status:</strong>
+    <a href="{{ filter_url('status', '') }}" {% if not active_status %}class="contrast"{% endif %}>All</a>
+    {% for s in all_statuses %}
+    &middot; <a href="{{ filter_url('status', s) }}" {% if active_status == s %}class="contrast"{% endif %}>{{ s }}</a>
+    {% endfor %}
+</p>
+
+<!-- Reading status filter -->
+<p>
+    <strong>Reading:</strong>
+    <a href="{{ filter_url('reading_status', '') }}" {% if not active_reading_status %}class="contrast"{% endif %}>All</a>
+    {% for rs in all_reading_statuses %}
+    &middot; <a href="{{ filter_url('reading_status', rs) }}" {% if active_reading_status == rs %}class="contrast"{% endif %}>{{ rs | capitalize }}</a>
+    {% endfor %}
+</p>
+
+<!-- Sort controls -->
+{% if papers or active_sort != "date_added" %}
+<p>
+    <strong>Sort by:</strong>
+    {% for s, label, default_ord in [("date_added", "Date Added", "desc"), ("title", "Title", "asc"), ("tag", "Tag", "asc"), ("arxiv_id", "arXiv ID", "asc")] %}
+    {% if s == active_sort %}
+        {% set next_ord = "asc" if active_order == "desc" else "desc" %}
+        {# Build sort URL preserving all filters #}
+        {% set sort_url = filter_url('sort', s) %}
+        {% if "order=" not in sort_url %}
+            {% set sort_url = sort_url + ("&" if "?" in sort_url else "?") + "order=" + next_ord %}
+        {% endif %}
+        <a href="{{ filter_url('sort', s + '&order=' + next_ord) }}" class="contrast">{{ label }} {{ "▼" if active_order == "desc" else "▲" }}</a>
+    {% else %}
+        <a href="{{ filter_url('sort', s + '&order=' + default_ord) }}">{{ label }}</a>
+    {% endif %}
+    {% if not loop.last %} &middot; {% endif %}
     {% endfor %}
 </p>
 {% endif %}
@@ -53,6 +104,7 @@
             <th>Tags</th>
             <th>Added</th>
             <th>Status</th>
+            <th>Reading</th>
             <th>Audio</th>
             <th></th>
         </tr>
@@ -65,6 +117,14 @@
             <td>{{ p.tags | join(', ') }}</td>
             <td>{{ p.date_added.strftime('%Y-%m-%d') }}</td>
             <td>{{ p.status.value }}</td>
+            <td>
+                <select class="reading-status-select" data-arxiv-id="{{ p.metadata.arxiv_id }}"
+                        onchange="updateReadingStatus(this)">
+                    {% for rs in ["unread", "read", "archived"] %}
+                    <option value="{{ rs }}" {% if p.reading_status.value == rs %}selected{% endif %}>{{ rs | capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </td>
             <td>
                 {% if p.audio_path %}
                 <a href="/audio/{{ p.metadata.arxiv_id }}.mp3">Play</a>
@@ -159,6 +219,20 @@ async function deletePaper(arxivId) {
         document.getElementById(`row-${arxivId}`)?.remove();
     } else {
         alert(data.error || 'Failed to delete paper');
+    }
+}
+
+async function updateReadingStatus(select) {
+    const arxivId = select.dataset.arxivId;
+    const resp = await fetch(`/api/paper/${arxivId}/reading-status`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reading_status: select.value}),
+    });
+    const data = await resp.json();
+    if (data.error) {
+        alert(data.error);
+        location.reload();
     }
 }
 </script>

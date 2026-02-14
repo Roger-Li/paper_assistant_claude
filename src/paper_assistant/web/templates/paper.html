@@ -45,7 +45,27 @@
 
 <!-- Actions -->
 <div style="margin-bottom: 1rem;">
+    {% if paper.summary_path %}
+    <button id="edit-btn" class="outline" style="font-size: 0.85rem;" onclick="toggleEdit()">Edit Summary</button>
+    {% endif %}
     <button id="delete-btn" class="secondary outline" style="font-size: 0.85rem;" onclick="deletePaper()">Delete this paper</button>
+</div>
+
+<!-- Edit panel (hidden by default) -->
+<div id="edit-panel" style="display: none; margin-bottom: 1rem;">
+    <label for="edit-markdown"><strong>Edit Summary Markdown</strong></label>
+    <textarea id="edit-markdown" rows="20" style="font-family: monospace; font-size: 0.85rem;"></textarea>
+    <div style="margin-top: 0.5rem;">
+        <label style="display: inline; font-size: 0.85rem;">
+            <input type="checkbox" id="regen-audio" checked style="display: inline; width: auto; margin-right: 0.3rem;">
+            Regenerate audio
+        </label>
+    </div>
+    <div style="margin-top: 0.5rem;">
+        <button id="save-btn" onclick="saveSummary()">Save Summary</button>
+        <button class="secondary outline" onclick="toggleEdit()">Cancel</button>
+    </div>
+    <div id="edit-status"></div>
 </div>
 
 <hr>
@@ -151,6 +171,69 @@ async function deletePaper() {
         window.location.href = '/';
     } else {
         alert(data.error || 'Failed to delete paper');
+    }
+}
+
+let editMode = false;
+
+async function toggleEdit() {
+    const panel = document.getElementById('edit-panel');
+    const content = document.getElementById('summary-content');
+    const editBtn = document.getElementById('edit-btn');
+
+    if (!editMode) {
+        const resp = await fetch(`/api/paper/${arxivId}/summary`);
+        const data = await resp.json();
+        if (data.error && !data.markdown) {
+            alert(data.error);
+            return;
+        }
+        document.getElementById('edit-markdown').value = data.markdown || '';
+        panel.style.display = 'block';
+        content.style.display = 'none';
+        editBtn.textContent = 'Cancel Edit';
+    } else {
+        panel.style.display = 'none';
+        content.style.display = 'block';
+        editBtn.textContent = 'Edit Summary';
+        document.getElementById('edit-status').innerHTML = '';
+    }
+    editMode = !editMode;
+}
+
+async function saveSummary() {
+    const markdown = document.getElementById('edit-markdown').value;
+    const regenAudio = document.getElementById('regen-audio').checked;
+    const status = document.getElementById('edit-status');
+    const saveBtn = document.getElementById('save-btn');
+
+    if (!markdown.trim()) {
+        status.innerHTML = '<p class="error">Summary cannot be empty.</p>';
+        return;
+    }
+
+    status.innerHTML = '<p aria-busy="true">Saving summary' + (regenAudio ? ' and regenerating audio' : '') + '...</p>';
+    saveBtn.disabled = true;
+
+    try {
+        const resp = await fetch(`/api/paper/${arxivId}/summary`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({markdown, regenerate_audio: regenAudio}),
+        });
+        const data = await resp.json();
+        if (data.error) {
+            status.innerHTML = `<p class="error">${data.error}</p>`;
+        } else {
+            let msg = 'Summary saved successfully.';
+            if (data.warning) msg += ` Warning: ${data.warning}`;
+            status.innerHTML = `<p>${msg}</p>`;
+            setTimeout(() => location.reload(), 1500);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+        saveBtn.disabled = false;
     }
 }
 </script>
