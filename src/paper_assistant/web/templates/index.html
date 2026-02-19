@@ -7,9 +7,9 @@
 
 <!-- Add paper form -->
 <details>
-    <summary>Add a new paper</summary>
+    <summary>Add a new paper or article</summary>
     <form id="add-form">
-        <input type="url" name="url" placeholder="https://arxiv.org/abs/2503.10291" required>
+        <input type="url" name="url" placeholder="https://arxiv.org/abs/2503.10291 or any article URL" required>
         <input type="text" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
         <button type="submit">Add Paper</button>
     </form>
@@ -20,8 +20,8 @@
 <details>
     <summary>Import a pre-generated summary</summary>
     <form id="import-form">
-        <label for="import-url">arXiv URL</label>
-        <input type="url" id="import-url" name="url" placeholder="https://arxiv.org/abs/2503.10291" required>
+        <label for="import-url">URL</label>
+        <input type="url" id="import-url" name="url" placeholder="https://arxiv.org/abs/2503.10291 or any article URL" required>
         <label for="import-tags">Tags</label>
         <input type="text" id="import-tags" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
         <label for="import-markdown">Markdown summary</label>
@@ -36,7 +36,7 @@
     <summary>Sync with Notion</summary>
     <form id="notion-sync-form">
         <label for="notion-sync-paper">Paper filter (optional)</label>
-        <input type="text" id="notion-sync-paper" name="paper" placeholder="arXiv ID or Notion page ID">
+        <input type="text" id="notion-sync-paper" name="paper" placeholder="Paper ID (arXiv ID or slug)">
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
             <button type="button" onclick="runNotionSync(true)">Preview Sync</button>
             <button type="button" onclick="runNotionSync(false)">Run Sync</button>
@@ -90,7 +90,7 @@
 {% if papers or active_sort != "date_added" %}
 <p>
     <strong>Sort by:</strong>
-    {% for s, label, default_ord in [("date_added", "Date Added", "desc"), ("title", "Title", "asc"), ("tag", "Tag", "asc"), ("arxiv_id", "arXiv ID", "asc")] %}
+    {% for s, label, default_ord in [("date_added", "Date Added", "desc"), ("title", "Title", "asc"), ("tag", "Tag", "asc"), ("arxiv_id", "ID", "asc")] %}
     {% if s == active_sort %}
         {% set next_ord = "asc" if active_order == "desc" else "desc" %}
         {# Build sort URL preserving all filters #}
@@ -113,7 +113,7 @@
 <table>
     <thead>
         <tr>
-            <th>arXiv ID</th>
+            <th>ID</th>
             <th>Title</th>
             <th>Tags</th>
             <th>Added</th>
@@ -125,14 +125,14 @@
     </thead>
     <tbody>
         {% for p in papers %}
-        <tr id="row-{{ p.metadata.arxiv_id }}">
-            <td><a href="/paper/{{ p.metadata.arxiv_id }}">{{ p.metadata.arxiv_id }}</a></td>
-            <td><a href="/paper/{{ p.metadata.arxiv_id }}">{{ p.metadata.title[:60] }}{{ '...' if p.metadata.title|length > 60 else '' }}</a></td>
+        <tr id="row-{{ p.metadata.paper_id }}">
+            <td><a href="/paper/{{ p.metadata.paper_id }}">{{ p.metadata.paper_id }}</a></td>
+            <td><a href="/paper/{{ p.metadata.paper_id }}">{{ p.metadata.title[:60] }}{{ '...' if p.metadata.title|length > 60 else '' }}</a></td>
             <td>{{ p.tags | join(', ') }}</td>
             <td>{{ p.date_added.strftime('%Y-%m-%d') }}</td>
             <td>{{ p.status.value }}</td>
             <td>
-                <select class="reading-status-select" data-arxiv-id="{{ p.metadata.arxiv_id }}"
+                <select class="reading-status-select" data-paper-id="{{ p.metadata.paper_id }}"
                         onchange="updateReadingStatus(this)">
                     {% for rs in ["unread", "read", "archived"] %}
                     <option value="{{ rs }}" {% if p.reading_status.value == rs %}selected{% endif %}>{{ rs | capitalize }}</option>
@@ -141,19 +141,20 @@
             </td>
             <td>
                 {% if p.audio_path %}
-                <a href="/audio/{{ p.metadata.arxiv_id }}.mp3">Play</a>
+                <a href="/audio/{{ p.audio_path.split('/')[-1] }}">Play</a>
                 {% else %}
                 —
                 {% endif %}
             </td>
-            <td><a href="#" onclick="deletePaper('{{ p.metadata.arxiv_id }}'); return false;" style="color: var(--pico-color-red-500, #dc3545); font-size: 0.8rem;">Delete</a></td>
+            <td><a href="#" onclick="deletePaper('{{ p.metadata.paper_id }}'); return false;" style="color: var(--pico-color-red-500, #dc3545); font-size: 0.8rem;">Delete</a></td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
 {% else %}
 <p>No papers yet. Add one using the form above or the CLI:</p>
-<pre><code>paper-assist add https://arxiv.org/abs/2503.10291</code></pre>
+<pre><code>paper-assist add https://arxiv.org/abs/2503.10291
+paper-assist add https://example.com/blog/some-article</code></pre>
 {% endif %}
 {% endblock %}
 
@@ -170,7 +171,7 @@ document.getElementById('add-form')?.addEventListener('submit', async (e) => {
     const tags = parseTags(form.tags.value);
     const status = document.getElementById('add-status');
 
-    status.innerHTML = '<p aria-busy="true">Processing paper... This may take a minute.</p>';
+    status.innerHTML = '<p aria-busy="true">Processing... This may take a minute.</p>';
     form.querySelector('button[type="submit"]').disabled = true;
 
     try {
@@ -182,7 +183,8 @@ document.getElementById('add-form')?.addEventListener('submit', async (e) => {
             const detail = data.detail ? data.detail.map(d => d.msg).join(', ') : '';
             status.innerHTML = `<p class="error">${data.error || detail || 'Server error'}</p>`;
         } else {
-            status.innerHTML = `<p>Added: <a href="/paper/${data.arxiv_id}">${data.title}</a></p>`;
+            const paperId = data.paper_id;
+            status.innerHTML = `<p>Added: <a href="/paper/${paperId}">${data.title}</a></p>`;
             setTimeout(() => location.reload(), 1000);
         }
     } catch (err) {
@@ -215,7 +217,8 @@ document.getElementById('import-form')?.addEventListener('submit', async (e) => 
             const errMsg = data.error || detail || `Server error (${resp.status})`;
             status.innerHTML = `<p class="error">${errMsg}</p>`;
         } else {
-            status.innerHTML = `<p>Imported: <a href="/paper/${data.arxiv_id}">${data.title}</a></p>`;
+            const paperId = data.paper_id;
+            status.innerHTML = `<p>Imported: <a href="/paper/${paperId}">${data.title}</a></p>`;
             setTimeout(() => location.reload(), 1000);
         }
     } catch (err) {
@@ -225,20 +228,20 @@ document.getElementById('import-form')?.addEventListener('submit', async (e) => 
     }
 });
 
-async function deletePaper(arxivId) {
-    if (!confirm(`Delete paper ${arxivId} and all its files?`)) return;
-    const resp = await fetch(`/api/paper/${arxivId}`, { method: 'DELETE' });
+async function deletePaper(paperId) {
+    if (!confirm(`Delete ${paperId} and all its files?`)) return;
+    const resp = await fetch(`/api/paper/${paperId}`, { method: 'DELETE' });
     const data = await resp.json();
     if (data.status === 'ok') {
-        document.getElementById(`row-${arxivId}`)?.remove();
+        document.getElementById(`row-${paperId}`)?.remove();
     } else {
         alert(data.error || 'Failed to delete paper');
     }
 }
 
 async function updateReadingStatus(select) {
-    const arxivId = select.dataset.arxivId;
-    const resp = await fetch(`/api/paper/${arxivId}/reading-status`, {
+    const paperId = select.dataset.paperId;
+    const resp = await fetch(`/api/paper/${paperId}/reading-status`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({reading_status: select.value}),

@@ -236,7 +236,7 @@ class TestApiImport:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["arxiv_id"] == "2503.10291"
+        assert data["paper_id"] == "2503.10291"
 
     def test_import_invalid_url(self, client):
         resp = client.post(

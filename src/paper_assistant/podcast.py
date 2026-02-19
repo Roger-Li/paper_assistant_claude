@@ -50,10 +50,12 @@ def generate_feed(
             continue
 
         fe = fg.add_entry()
-        fe.id(paper.metadata.arxiv_id)
+        fe.id(paper.metadata.paper_id)
         fe.title(paper.metadata.title)
         fe.description(paper.metadata.abstract[:500])
-        fe.link(href=paper.metadata.arxiv_url)
+        link_url = paper.metadata.source_url or paper.metadata.arxiv_url
+        if link_url:
+            fe.link(href=link_url)
 
         # Ensure datetime is timezone-aware
         pub_date = paper.date_added

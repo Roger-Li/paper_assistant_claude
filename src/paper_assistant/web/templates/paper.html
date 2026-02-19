@@ -7,9 +7,15 @@
 <hgroup>
     <h1>{{ paper.metadata.title }}</h1>
     <p>
+        {% if paper.metadata.arxiv_id %}
         <a href="{{ paper.metadata.arxiv_url }}" target="_blank">arXiv:{{ paper.metadata.arxiv_id }}</a>
+        {% elif paper.metadata.source_url %}
+        <a href="{{ paper.metadata.source_url }}" target="_blank">{{ paper.metadata.source_url[:60] }}{{ '...' if paper.metadata.source_url|length > 60 else '' }}</a>
+        {% endif %}
         &middot; {{ paper.metadata.authors[:5] | join(', ') }}{% if paper.metadata.authors|length > 5 %}, et al.{% endif %}
+        {% if paper.metadata.published %}
         &middot; {{ paper.metadata.published.strftime('%Y-%m-%d') }}
+        {% endif %}
     </p>
 </hgroup>
 
@@ -37,7 +43,7 @@
         {% if paper.audio_path %}
         <strong>Audio Summary</strong>
         <audio controls preload="metadata" style="width: 100%;">
-            <source src="/audio/{{ paper.metadata.arxiv_id }}.mp3" type="audio/mpeg">
+            <source src="/audio/{{ paper.audio_path.split('/')[-1] }}" type="audio/mpeg">
         </audio>
         {% endif %}
     </div>
@@ -83,7 +89,7 @@
 
 {% else %}
 <h1>Paper not found</h1>
-<p>No paper with ID <code>{{ arxiv_id }}</code> was found.</p>
+<p>No paper with ID <code>{{ paper_id }}</code> was found.</p>
 <p><a href="/">&larr; Back to all papers</a></p>
 {% endif %}
 {% endblock %}
@@ -133,7 +139,7 @@
 {% endif %}
 {% if paper %}
 <script>
-const arxivId = {{ paper.metadata.arxiv_id | tojson }};
+const paperId = {{ paper.metadata.paper_id | tojson }};
 
 function renderTags(tags) {
     const el = document.getElementById('tags-display');
@@ -143,7 +149,7 @@ function renderTags(tags) {
 }
 
 async function removeTag(tag) {
-    const resp = await fetch(`/api/paper/${arxivId}/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    const resp = await fetch(`/api/paper/${paperId}/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' });
     const data = await resp.json();
     if (data.tags !== undefined) renderTags(data.tags);
 }
@@ -153,7 +159,7 @@ document.getElementById('add-tag-form')?.addEventListener('submit', async (e) =>
     const input = document.getElementById('new-tag');
     const tags = input.value.split(',').map(t => t.trim()).filter(Boolean);
     if (!tags.length) return;
-    const resp = await fetch(`/api/paper/${arxivId}/tags`, {
+    const resp = await fetch(`/api/paper/${paperId}/tags`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({tags}),
@@ -165,7 +171,7 @@ document.getElementById('add-tag-form')?.addEventListener('submit', async (e) =>
 
 async function deletePaper() {
     if (!confirm('Delete this paper and all its files?')) return;
-    const resp = await fetch(`/api/paper/${arxivId}`, { method: 'DELETE' });
+    const resp = await fetch(`/api/paper/${paperId}`, { method: 'DELETE' });
     const data = await resp.json();
     if (data.status === 'ok') {
         window.location.href = '/';
@@ -182,7 +188,7 @@ async function toggleEdit() {
     const editBtn = document.getElementById('edit-btn');
 
     if (!editMode) {
-        const resp = await fetch(`/api/paper/${arxivId}/summary`);
+        const resp = await fetch(`/api/paper/${paperId}/summary`);
         const data = await resp.json();
         if (data.error && !data.markdown) {
             alert(data.error);
@@ -216,7 +222,7 @@ async function saveSummary() {
     saveBtn.disabled = true;
 
     try {
-        const resp = await fetch(`/api/paper/${arxivId}/summary`, {
+        const resp = await fetch(`/api/paper/${paperId}/summary`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({markdown, regenerate_audio: regenAudio}),

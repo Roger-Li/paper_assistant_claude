@@ -34,6 +34,7 @@ def prepare_text_for_tts(
     markdown: str,
     title: str,
     authors: list[str],
+    source_label: str = "paper",
 ) -> str:
     """Prepare markdown summary for TTS consumption.
 
@@ -46,7 +47,7 @@ def prepare_text_for_tts(
     else:
         author_str = ", ".join(authors)
 
-    intro = f"This is a summary of the paper: {title}, by {author_str}.\n\n"
+    intro = f"This is a summary of the {source_label}: {title}, by {author_str}.\n\n"
 
     text = markdown
 

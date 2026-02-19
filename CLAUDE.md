@@ -6,7 +6,7 @@ For user-facing setup and usage, see [README.md](README.md).
 ## Purpose
 
 Keep the project reliable while iterating quickly on:
-- arXiv ingestion
+- arXiv ingestion and web article ingestion
 - summarization
 - audio generation
 - local web UI/API
@@ -18,10 +18,11 @@ Keep the project reliable while iterating quickly on:
 src/paper_assistant/
 ├── cli.py          # Click commands and end-to-end pipelines
 ├── config.py       # Config loading and directory management
-├── models.py       # Pydantic models, processing/reading status enums
+├── models.py       # Pydantic models, processing/reading status enums, SourceType
 ├── arxiv.py        # arXiv URL parsing, metadata fetch, PDF download
+├── web_article.py  # Web article URL detection, slug generation, HTML fetch/extract
 ├── pdf.py          # PDF text extraction
-├── prompt.py       # Claude prompt template
+├── prompt.py       # Claude prompt templates (paper + article variants)
 ├── summarizer.py   # Summarization orchestration and parsing helpers
 ├── storage.py      # JSON index CRUD and file naming helpers
 ├── tts.py          # Markdown-to-speech conversion
@@ -62,7 +63,11 @@ Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
 
 1. Re-fetch paper after `save_summary`.
    - `storage.save_summary()` updates a different paper instance internally.
-   - Always call `paper = storage.get_paper(arxiv_id)` before further mutations.
+   - Always call `paper = storage.get_paper(paper_id)` before further mutations.
+
+1b. Use `paper_id` as the universal key.
+   - `PaperMetadata.paper_id` resolves to `arxiv_id` for arXiv papers, `source_slug` for web articles.
+   - All storage/route/CLI calls use `paper_id`, never raw `arxiv_id` for lookups.
 
 2. Keep `index.json` and file paths consistent.
    - `pdf_path`, `summary_path`, and `audio_path` are stored relative to `data_dir`.
@@ -114,17 +119,17 @@ Resolution order:
 
 HTML:
 - `GET /`
-- `GET /paper/{arxiv_id}`
+- `GET /paper/{paper_id}` (supports both arXiv IDs and URL-derived slugs)
 
 JSON:
-- `POST /api/add`
-- `POST /api/import`
-- `POST /api/paper/{arxiv_id}/tags`
-- `DELETE /api/paper/{arxiv_id}/tags/{tag}`
-- `DELETE /api/paper/{arxiv_id}`
-- `GET /api/paper/{arxiv_id}/summary`
-- `PUT /api/paper/{arxiv_id}/summary`
-- `PUT /api/paper/{arxiv_id}/reading-status`
+- `POST /api/add` (auto-detects arXiv URLs vs web article URLs)
+- `POST /api/import` (auto-detects arXiv URLs vs web article URLs)
+- `POST /api/paper/{paper_id}/tags`
+- `DELETE /api/paper/{paper_id}/tags/{tag}`
+- `DELETE /api/paper/{paper_id}`
+- `GET /api/paper/{paper_id}/summary`
+- `PUT /api/paper/{paper_id}/summary`
+- `PUT /api/paper/{paper_id}/reading-status`
 - `GET /api/papers` (supports `?sort=date_added|title|tag|arxiv_id&order=asc|desc&status=...&reading_status=...`)
 - `GET /api/notion/sync/preview`
 - `POST /api/notion/sync`
@@ -190,6 +195,7 @@ A task is complete only when all are true:
 4. Reachable podcast feed for phone clients (LAN/tunnel/hosted URL strategy).
 5. Batch import for multiple arXiv entries + summary files.
 6. Search across titles/tags/summaries.
+7. ~~Support non-arXiv web articles (blog posts, technical articles).~~ (Done — see `docs/design-web-article-support.md`)
 
 ## Non-Goals (Current)
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.storage import (
     StorageManager,
     make_audio_filename,
@@ -313,3 +313,67 @@ class TestStorageManager:
         assert paper.notion_page_id == "notion-page-1"
         assert paper.notion_modified_at == now
         assert paper.last_synced_at == now
+
+
+def _make_web_metadata(**overrides):
+    defaults = {
+        "source_type": SourceType.WEB,
+        "source_slug": "example-com-blog-test",
+        "source_url": "https://example.com/blog/test",
+        "title": "Test Web Article",
+        "authors": ["Web Author"],
+    }
+    defaults.update(overrides)
+    return PaperMetadata(**defaults)
+
+
+class TestWebArticleStorage:
+    @pytest.fixture
+    def storage(self, tmp_path):
+        config = _make_config(tmp_path)
+        config.ensure_dirs()
+        return StorageManager(config)
+
+    def test_add_and_get_web_article(self, storage):
+        paper = Paper(metadata=_make_web_metadata(), tags=["blog"])
+        storage.add_paper(paper)
+        retrieved = storage.get_paper("example-com-blog-test")
+        assert retrieved is not None
+        assert retrieved.metadata.source_type == SourceType.WEB
+        assert retrieved.metadata.source_slug == "example-com-blog-test"
+        assert retrieved.metadata.paper_id == "example-com-blog-test"
+        assert retrieved.tags == ["blog"]
+
+    def test_web_article_coexists_with_arxiv(self, storage):
+        arxiv_paper = Paper(metadata=_make_metadata())
+        web_paper = Paper(metadata=_make_web_metadata())
+        storage.add_paper(arxiv_paper)
+        storage.add_paper(web_paper)
+
+        papers = storage.list_papers()
+        assert len(papers) == 2
+        assert storage.get_paper("2503.10291") is not None
+        assert storage.get_paper("example-com-blog-test") is not None
+
+    def test_save_summary_web_article(self, storage):
+        paper = Paper(metadata=_make_web_metadata())
+        storage.add_paper(paper)
+        path = storage.save_summary("example-com-blog-test", "# Summary\nWeb content")
+        assert path.exists()
+        updated = storage.get_paper("example-com-blog-test")
+        assert updated.summary_path is not None
+        assert updated.status == ProcessingStatus.SUMMARIZED
+
+    def test_delete_web_article(self, storage):
+        paper = Paper(metadata=_make_web_metadata())
+        storage.add_paper(paper)
+        assert storage.delete_paper("example-com-blog-test")
+        assert storage.get_paper("example-com-blog-test") is None
+
+    def test_backward_compat_arxiv_only_index(self, storage):
+        """Existing arXiv-only papers should still load with default source_type."""
+        paper = Paper(metadata=_make_metadata())
+        storage.add_paper(paper)
+        loaded = storage.get_paper("2503.10291")
+        assert loaded.metadata.source_type == SourceType.ARXIV
+        assert loaded.metadata.paper_id == "2503.10291"

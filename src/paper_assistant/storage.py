@@ -16,23 +16,23 @@ from paper_assistant.models import (
 )
 
 
-def make_summary_filename(arxiv_id: str, title: str) -> str:
+def make_summary_filename(paper_id: str, title: str) -> str:
     """Generate the standard summary filename.
 
     Example: [Paper][2503.10291] VisualPRM - An Effective Process Reward Model.md
     """
     safe = sanitize_filename(title)
-    return f"[Paper][{arxiv_id}] {safe}.md"
+    return f"[Paper][{paper_id}] {safe}.md"
 
 
-def make_audio_filename(arxiv_id: str) -> str:
+def make_audio_filename(paper_id: str) -> str:
     """Generate audio filename. Example: 2503.10291.mp3"""
-    return f"{arxiv_id}.mp3"
+    return f"{paper_id}.mp3"
 
 
-def make_pdf_filename(arxiv_id: str) -> str:
+def make_pdf_filename(paper_id: str) -> str:
     """Generate PDF cache filename. Example: 2503.10291.pdf"""
-    return f"{arxiv_id}.pdf"
+    return f"{paper_id}.pdf"
 
 
 class StorageManager:
@@ -66,7 +66,7 @@ class StorageManager:
     def add_paper(self, paper: Paper) -> None:
         """Add or update a paper in the index."""
         index = self.load_index()
-        index.papers[paper.metadata.arxiv_id] = paper
+        index.papers[paper.metadata.paper_id] = paper
         self.save_index()
 
     @staticmethod
@@ -74,10 +74,10 @@ class StorageManager:
         """Update local sync timestamp for user-editable fields."""
         paper.local_modified_at = modified_at or datetime.now(timezone.utc)
 
-    def get_paper(self, arxiv_id: str) -> Paper | None:
-        """Retrieve a paper by arXiv ID."""
+    def get_paper(self, paper_id: str) -> Paper | None:
+        """Retrieve a paper by its paper_id (arxiv_id or source_slug)."""
         index = self.load_index()
-        return index.papers.get(arxiv_id)
+        return index.papers.get(paper_id)
 
     def list_papers(
         self,
@@ -106,19 +106,19 @@ class StorageManager:
             if sort_by == "tag":
                 return p.tags[0].lower() if p.tags else ""
             if sort_by == "arxiv_id":
-                return p.metadata.arxiv_id
+                return p.metadata.paper_id
             return getattr(p, sort_by, p.date_added)
 
         papers.sort(key=sort_key, reverse=reverse)
         return papers
 
-    def delete_paper(self, arxiv_id: str, delete_files: bool = True) -> bool:
+    def delete_paper(self, paper_id: str, delete_files: bool = True) -> bool:
         """Remove a paper from the index and optionally delete its files.
 
         Returns True if the paper was found and removed.
         """
         index = self.load_index()
-        paper = index.papers.pop(arxiv_id, None)
+        paper = index.papers.pop(paper_id, None)
         if paper is None:
             return False
 
@@ -132,21 +132,21 @@ class StorageManager:
         self.save_index()
         return True
 
-    def paper_exists(self, arxiv_id: str) -> bool:
+    def paper_exists(self, paper_id: str) -> bool:
         """Check if a paper already exists in the index."""
         index = self.load_index()
-        return arxiv_id in index.papers
+        return paper_id in index.papers
 
     def add_tags(
         self,
-        arxiv_id: str,
+        paper_id: str,
         tags: list[str],
         modified_at: datetime | None = None,
     ) -> list[str]:
         """Add tags to a paper. Returns the updated tag list."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
         changed = False
         for tag in tags:
             if tag and tag not in paper.tags:
@@ -159,14 +159,14 @@ class StorageManager:
 
     def remove_tag(
         self,
-        arxiv_id: str,
+        paper_id: str,
         tag: str,
         modified_at: datetime | None = None,
     ) -> list[str]:
         """Remove a tag from a paper. Returns the updated tag list."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
         if tag in paper.tags:
             paper.tags.remove(tag)
             self._mark_local_modified(paper, modified_at)
@@ -175,14 +175,14 @@ class StorageManager:
 
     def set_reading_status(
         self,
-        arxiv_id: str,
+        paper_id: str,
         reading_status: ReadingStatus,
         modified_at: datetime | None = None,
     ) -> ReadingStatus:
         """Set the reading status of a paper. Returns the new reading status."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
         if paper.reading_status != reading_status:
             paper.reading_status = reading_status
             self._mark_local_modified(paper, modified_at)
@@ -195,16 +195,16 @@ class StorageManager:
 
     def save_summary(
         self,
-        arxiv_id: str,
+        paper_id: str,
         content: str,
         modified_at: datetime | None = None,
     ) -> Path:
         """Write summary markdown file and update paper's summary_path."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
 
-        filename = make_summary_filename(arxiv_id, paper.metadata.title)
+        filename = make_summary_filename(paper_id, paper.metadata.title)
         full_path = self.config.papers_dir / filename
         full_path.write_text(content, encoding="utf-8")
 
@@ -217,14 +217,14 @@ class StorageManager:
 
     def set_archived(
         self,
-        arxiv_id: str,
+        paper_id: str,
         archived: bool,
         modified_at: datetime | None = None,
     ) -> None:
         """Mark a paper archived/unarchived for sync and UI filtering."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
 
         now = modified_at or datetime.now(timezone.utc)
         if archived:
@@ -239,16 +239,16 @@ class StorageManager:
 
     def set_notion_fields(
         self,
-        arxiv_id: str,
+        paper_id: str,
         *,
         notion_page_id: str | None = None,
         notion_modified_at: datetime | None = None,
         last_synced_at: datetime | None = None,
     ) -> None:
         """Persist Notion linkage/sync metadata for a paper."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
 
         if notion_page_id is not None:
             paper.notion_page_id = notion_page_id
@@ -258,13 +258,13 @@ class StorageManager:
             paper.last_synced_at = last_synced_at
         self.save_index()
 
-    def save_audio(self, arxiv_id: str, audio_data: bytes) -> Path:
+    def save_audio(self, paper_id: str, audio_data: bytes) -> Path:
         """Write audio file and update paper's audio_path."""
-        paper = self.get_paper(arxiv_id)
+        paper = self.get_paper(paper_id)
         if paper is None:
-            raise KeyError(f"Paper {arxiv_id} not in index")
+            raise KeyError(f"Paper {paper_id} not in index")
 
-        filename = make_audio_filename(arxiv_id)
+        filename = make_audio_filename(paper_id)
         full_path = self.config.audio_dir / filename
         full_path.write_bytes(audio_data)
 

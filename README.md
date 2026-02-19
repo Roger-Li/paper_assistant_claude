@@ -4,7 +4,7 @@ AI-powered ML research paper summarizer with podcast generation and Notion sync.
 
 ## Overview
 
-Paper Assistant takes an arXiv URL, fetches metadata and PDF, generates a structured markdown summary with Claude, optionally creates narrated audio, and maintains a local podcast feed.
+Paper Assistant takes an arXiv URL or any web article URL, fetches metadata and content, generates a structured markdown summary with Claude, optionally creates narrated audio, and maintains a local podcast feed.
 
 It can also sync papers to a Notion database (manual two-way sync for summary/tags/reading status) so pages are easy to share and listen to across devices.
 
@@ -79,44 +79,53 @@ Default path: `~/.paper-assistant/`
 
 ```text
 ~/.paper-assistant/
-├── papers/     # [Paper][{arxiv_id}] {title}.md
-├── audio/      # {arxiv_id}.mp3
-├── pdfs/       # {arxiv_id}.pdf
+├── papers/     # [Paper][{paper_id}] {title}.md
+├── audio/      # {paper_id}.mp3
+├── pdfs/       # {arxiv_id}.pdf (arXiv papers only)
 ├── index.json  # Source of truth for paper metadata/state
 └── feed.xml    # RSS feed
 ```
+
+For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web articles, it is a URL-derived slug (e.g., `thinkingmachines-ai-blog-on-policy-distillation`).
 
 ## CLI Commands
 
 | Command | Description |
 |---|---|
-| `paper-assist add <url>` | Full pipeline: fetch -> summarize -> audio -> feed |
-| `paper-assist import <url>` | Import pre-written markdown summary |
+| `paper-assist add <url>` | Full pipeline: fetch -> summarize -> audio -> feed (arXiv or web URL) |
+| `paper-assist import <url>` | Import pre-written markdown summary (arXiv or web URL) |
 | `paper-assist list` | List papers (`--status`, `--tag`) |
-| `paper-assist show <arxiv_id>` | Print summary in terminal |
-| `paper-assist remove <arxiv_id>` | Remove paper (`--keep-files` supported) |
+| `paper-assist show <paper_id>` | Print summary in terminal |
+| `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
 | `paper-assist serve` | Start local web app |
 | `paper-assist regenerate-feed` | Rebuild RSS feed from index |
 | `paper-assist notion-sync` | Manual two-way sync with Notion (`--paper`, `--dry-run`) |
 
 ## Common Workflows
 
-### 1. Add a paper with tags
+### 1. Add a paper or article with tags
 
 ```bash
+# arXiv paper
 paper-assist add https://arxiv.org/abs/2503.10291 -t multimodal -t rl
+
+# Web article (blog post, technical article, etc.)
+paper-assist add https://thinkingmachines.ai/blog/on-policy-distillation/ -t distillation
 ```
 
 Useful flags:
-- `--native-pdf`: send raw PDF to Claude instead of extracted text
+- `--native-pdf`: send raw PDF to Claude instead of extracted text (arXiv only)
 - `--skip-audio`: skip TTS generation
 - `--force`: re-process if already present
 
 ### 2. Import your own summary
 
 ```bash
-# macOS clipboard mode (default)
+# arXiv paper (macOS clipboard mode)
 paper-assist import https://arxiv.org/abs/2503.10291 -t survey
+
+# Web article with file
+paper-assist import https://example.com/blog/post --file summary.md
 
 # cross-platform mode
 paper-assist import https://arxiv.org/abs/2503.10291 --file summary.md
@@ -127,6 +136,7 @@ paper-assist import https://arxiv.org/abs/2503.10291 --file summary.md
 ```bash
 paper-assist list --status complete --tag multimodal
 paper-assist show 2503.10291
+paper-assist show thinkingmachines-ai-blog-on-policy-distillation
 ```
 
 ### 4. Run web UI on another host/port
@@ -210,6 +220,9 @@ Create a Notion database with these properties:
 - `summary_last_modified` (`date`)
 - `local_last_modified` (`date`)
 - `archived` (`checkbox`)
+- `source_slug` (`rich_text`) — **optional**, needed only if you sync web articles to Notion
+
+The `source_slug` column stores the URL-derived slug for web articles. Existing arXiv papers are unaffected — sync continues to join on `arxiv_id` for those. If you don't add the column, arXiv sync works normally and web articles sync without the slug populated.
 
 Set environment variables:
 

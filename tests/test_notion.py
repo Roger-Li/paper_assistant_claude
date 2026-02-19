@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.notion import NotionPaper, sync_notion, _markdown_to_blocks, _blocks_to_markdown
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
@@ -25,6 +25,16 @@ def _make_metadata(arxiv_id: str = "2503.10291", title: str = "Sample Paper") ->
         categories=["cs.LG"],
         arxiv_url=f"https://arxiv.org/abs/{arxiv_id}",
         pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+    )
+
+
+def _make_web_metadata(slug: str = "example-com-blog-test", title: str = "Test Article") -> PaperMetadata:
+    return PaperMetadata(
+        source_type=SourceType.WEB,
+        source_slug=slug,
+        source_url=f"https://example.com/blog/test",
+        title=title,
+        authors=["Web Author"],
     )
 
 
@@ -54,10 +64,12 @@ class FakeNotionClient:
         return list(self.remote_papers)
 
     async def create_page(self, *, paper, summary_markdown, summary_modified_at, include_audio):
-        self.created_calls.append(paper.metadata.arxiv_id)
+        pid = paper.metadata.paper_id
+        self.created_calls.append(pid)
         created = NotionPaper(
-            page_id=f"page-{paper.metadata.arxiv_id}",
+            page_id=f"page-{pid}",
             arxiv_id=paper.metadata.arxiv_id,
+            source_slug=paper.metadata.source_slug,
             title=paper.metadata.title,
             authors=paper.metadata.authors,
             tags=paper.tags,
@@ -85,6 +97,7 @@ class FakeNotionClient:
         return NotionPaper(
             page_id=page_id,
             arxiv_id=paper.metadata.arxiv_id,
+            source_slug=paper.metadata.source_slug,
             title=paper.metadata.title,
             authors=paper.metadata.authors,
             tags=paper.tags,
@@ -108,14 +121,15 @@ class FakeNotionClient:
 
 def _save_summary(storage: StorageManager, paper: Paper, markdown: str) -> None:
     storage.add_paper(paper)
+    pid = paper.metadata.paper_id
     result = SummarizationResult(
         full_markdown=markdown,
         one_pager=markdown,
         sections={"One-Pager": markdown},
         model_used="manual",
     )
-    storage.save_summary(paper.metadata.arxiv_id, format_summary_file(paper.metadata, result))
-    reloaded = storage.get_paper(paper.metadata.arxiv_id)
+    storage.save_summary(pid, format_summary_file(paper.metadata, result))
+    reloaded = storage.get_paper(pid)
     reloaded.status = ProcessingStatus.COMPLETE
     storage.add_paper(reloaded)
 
@@ -150,6 +164,7 @@ async def test_sync_remote_newer_pulls_summary_tags_status(tmp_path):
     remote = NotionPaper(
         page_id="page-1",
         arxiv_id="2503.10291",
+        source_slug=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=["remote-tag"],
@@ -193,6 +208,7 @@ async def test_sync_local_newer_pushes_update(tmp_path):
     remote = NotionPaper(
         page_id="page-1",
         arxiv_id="2503.10291",
+        source_slug=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=["remote"],
@@ -219,6 +235,7 @@ async def test_sync_imports_notion_only_record(tmp_path):
     remote = NotionPaper(
         page_id="page-new",
         arxiv_id="2502.00001",
+        source_slug=None,
         title="Remote Paper",
         authors=["Remote Author"],
         tags=["remote"],
@@ -232,7 +249,7 @@ async def test_sync_imports_notion_only_record(tmp_path):
 
     fake_client = FakeNotionClient(remote_papers=[remote])
     with patch(
-        "paper_assistant.notion.fetch_metadata",
+        "paper_assistant.arxiv.fetch_metadata",
         new_callable=AsyncMock,
         return_value=_make_metadata(arxiv_id="2502.00001", title="Remote Paper"),
     ):
@@ -258,6 +275,7 @@ async def test_sync_archive_propagates_from_notion(tmp_path):
     remote = NotionPaper(
         page_id="page-arch",
         arxiv_id="2503.10291",
+        source_slug=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=[],
@@ -299,6 +317,82 @@ async def test_sync_continues_when_audio_upload_fails(tmp_path):
     assert report.notion_created == 1
     assert report.warnings
     assert "Audio upload failed" in report.warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_sync_web_article_creates_notion_record(tmp_path):
+    """Web articles should sync to Notion using source_slug as the join key."""
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+    paper = Paper(metadata=_make_web_metadata())
+    _save_summary(storage, paper, "# One-Pager\nWeb article summary")
+
+    fake_client = FakeNotionClient(remote_papers=[])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.notion_created == 1
+    updated = storage.get_paper("example-com-blog-test")
+    assert updated.notion_page_id == "page-example-com-blog-test"
+
+
+@pytest.mark.asyncio
+async def test_sync_imports_notion_web_article(tmp_path):
+    """Notion pages with source_slug but no arxiv_id should import as web articles."""
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+
+    remote = NotionPaper(
+        page_id="page-web",
+        arxiv_id=None,
+        source_slug="remote-blog-slug",
+        title="Remote Blog Post",
+        authors=["Blog Author"],
+        tags=["blog"],
+        reading_status="unread",
+        summary_markdown="# One-Pager\nBlog summary",
+        summary_last_modified=datetime.now(timezone.utc),
+        local_last_modified=None,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    fake_client = FakeNotionClient(remote_papers=[remote])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.local_created == 1
+    imported = storage.get_paper("remote-blog-slug")
+    assert imported is not None
+    assert imported.metadata.source_type == SourceType.WEB
+    assert imported.metadata.source_slug == "remote-blog-slug"
+    assert imported.notion_page_id == "page-web"
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_notion_page_without_id(tmp_path):
+    """Pages with neither arxiv_id nor source_slug should be skipped."""
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+
+    remote = NotionPaper(
+        page_id="page-orphan",
+        arxiv_id=None,
+        source_slug=None,
+        title="Orphan Page",
+        authors=[],
+        tags=[],
+        reading_status=None,
+        summary_markdown="",
+        summary_last_modified=None,
+        local_last_modified=None,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    fake_client = FakeNotionClient(remote_papers=[remote])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.skipped == 1
+    assert "missing arxiv_id and source_slug" in report.warnings[0]
 
 
 # ---------------------------------------------------------------------------

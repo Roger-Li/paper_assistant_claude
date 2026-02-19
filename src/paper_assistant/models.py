@@ -24,17 +24,43 @@ class ReadingStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class PaperMetadata(BaseModel):
-    """Core metadata fetched from arXiv."""
+class SourceType(str, Enum):
+    ARXIV = "arxiv"
+    WEB = "web"
 
-    arxiv_id: str  # e.g., "2503.10291"
+
+class PaperMetadata(BaseModel):
+    """Core metadata for a paper or web article.
+
+    For arXiv papers, ``arxiv_id`` is set and used as the primary key.
+    For web articles, ``source_slug`` is set and used as the primary key.
+    """
+
+    # Source identification
+    source_type: SourceType = SourceType.ARXIV
+    source_url: str | None = None  # canonical URL for web articles
+    source_slug: str | None = None  # URL-derived slug for web articles
+
+    # arXiv-specific (optional for web articles)
+    arxiv_id: str | None = None  # e.g., "2503.10291"
+    arxiv_url: str | None = None  # https://arxiv.org/abs/2503.10291
+    pdf_url: str | None = None  # https://arxiv.org/pdf/2503.10291
+
+    # Common metadata
     title: str
-    authors: list[str]
-    abstract: str
-    published: datetime
+    authors: list[str] = Field(default_factory=list)
+    abstract: str = ""
+    published: datetime | None = None
     categories: list[str] = Field(default_factory=list)
-    arxiv_url: str  # https://arxiv.org/abs/2503.10291
-    pdf_url: str  # https://arxiv.org/pdf/2503.10291
+
+    @property
+    def paper_id(self) -> str:
+        """Primary key: arxiv_id for arXiv papers, source_slug for web articles."""
+        if self.arxiv_id:
+            return self.arxiv_id
+        if self.source_slug:
+            return self.source_slug
+        raise ValueError("PaperMetadata has neither arxiv_id nor source_slug")
 
 
 class Paper(BaseModel):
@@ -70,7 +96,7 @@ class Paper(BaseModel):
 class PaperIndex(BaseModel):
     """Top-level index stored in index.json."""
 
-    papers: dict[str, Paper] = Field(default_factory=dict)  # keyed by arxiv_id
+    papers: dict[str, Paper] = Field(default_factory=dict)  # keyed by paper_id
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

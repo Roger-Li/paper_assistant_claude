@@ -12,9 +12,8 @@ from typing import Any
 import httpx
 import mistune
 
-from paper_assistant.arxiv import fetch_metadata
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, ProcessingStatus, ReadingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import (
     SummarizationResult,
@@ -411,6 +410,7 @@ def _parse_reading_status(value: str | None) -> ReadingStatus | None:
 class NotionPaper:
     page_id: str
     arxiv_id: str | None
+    source_slug: str | None
     title: str
     authors: list[str]
     tags: list[str]
@@ -420,6 +420,11 @@ class NotionPaper:
     local_last_modified: datetime | None
     archived: bool
     notion_last_edited_time: datetime
+
+    @property
+    def paper_id(self) -> str | None:
+        """Return the best available identifier."""
+        return self.arxiv_id or self.source_slug or None
 
     @property
     def remote_modified_at(self) -> datetime:
@@ -550,6 +555,10 @@ class NotionClient:
             "local_last_modified": "date",
             "archived": "checkbox",
         }
+        # Optional properties that won't raise errors if missing
+        optional = {
+            "source_slug": "rich_text",
+        }
 
         resolved: dict[str, str] = {}
         for canonical, expected_type in expected.items():
@@ -578,6 +587,19 @@ class NotionClient:
                 f"'{canonical}' with type '{expected_type}'. "
                 f"Available properties: {available}"
             )
+
+        # Resolve optional properties (no error if missing)
+        for canonical, expected_type in optional.items():
+            if types_by_name.get(canonical) == expected_type:
+                resolved[canonical] = canonical
+            else:
+                case_matches = [
+                    name
+                    for name, prop_type in types_by_name.items()
+                    if name.lower() == canonical.lower() and prop_type == expected_type
+                ]
+                if case_matches:
+                    resolved[canonical] = case_matches[0]
 
         self._property_keys = resolved
         return resolved
@@ -661,6 +683,7 @@ class NotionClient:
         return NotionPaper(
             page_id=page["id"],
             arxiv_id=prop_text("arxiv_id") or None,
+            source_slug=prop_text("source_slug") or None,
             title=prop_text("title"),
             authors=[a.strip() for a in prop_text("authors").split(",") if a.strip()],
             tags=_dedupe_tags(prop_tags("tags")),
@@ -718,6 +741,7 @@ class NotionClient:
         summary_modified_at: datetime,
         local_modified_at: datetime,
         archived: bool,
+        source_slug: str | None = None,
     ) -> dict[str, Any]:
         arxiv_id_key = self._property_key("arxiv_id")
         title_key = self._property_key("title")
@@ -728,7 +752,7 @@ class NotionClient:
         local_modified_key = self._property_key("local_last_modified")
         archived_key = self._property_key("archived")
 
-        return {
+        props: dict[str, Any] = {
             arxiv_id_key: {"rich_text": _to_rich_text(arxiv_id)},
             title_key: {"title": _to_rich_text(title[:200])},
             authors_key: {"rich_text": _to_rich_text(", ".join(authors))},
@@ -738,6 +762,13 @@ class NotionClient:
             local_modified_key: {"date": {"start": local_modified_at.isoformat()}},
             archived_key: {"checkbox": archived},
         }
+
+        # Write source_slug only if the Notion DB has the column
+        if source_slug and "source_slug" in (self._property_keys or {}):
+            slug_key = self._property_key("source_slug")
+            props[slug_key] = {"rich_text": _to_rich_text(source_slug)}
+
+        return props
 
     async def create_page(
         self,
@@ -752,7 +783,7 @@ class NotionClient:
         payload = {
             "parent": {"database_id": self.database_id},
             "properties": self._build_properties(
-                arxiv_id=paper.metadata.arxiv_id,
+                arxiv_id=paper.metadata.arxiv_id or "",
                 title=paper.metadata.title,
                 authors=paper.metadata.authors,
                 tags=paper.tags,
@@ -760,6 +791,7 @@ class NotionClient:
                 summary_modified_at=summary_modified_at,
                 local_modified_at=paper.local_modified_at,
                 archived=paper.archived_at is not None or paper.reading_status == ReadingStatus.ARCHIVED,
+                source_slug=paper.metadata.source_slug,
             ),
             "children": blocks[:100],
         }
@@ -787,7 +819,7 @@ class NotionClient:
         await self._ensure_property_keys()
         payload = {
             "properties": self._build_properties(
-                arxiv_id=paper.metadata.arxiv_id,
+                arxiv_id=paper.metadata.arxiv_id or "",
                 title=paper.metadata.title,
                 authors=paper.metadata.authors,
                 tags=paper.tags,
@@ -795,6 +827,7 @@ class NotionClient:
                 summary_modified_at=summary_modified_at,
                 local_modified_at=paper.local_modified_at,
                 archived=archived,
+                source_slug=paper.metadata.source_slug,
             ),
             "archived": archived,
         }
@@ -928,8 +961,9 @@ async def _push_local_to_notion(
     audio_path = (config.data_dir / paper.audio_path) if paper.audio_path else None
     archived = _should_archive(paper)
 
+    pid = paper.metadata.paper_id
     action = (
-        f"push local->{paper.metadata.arxiv_id} to notion "
+        f"push local->{pid} to notion "
         f"({'create' if remote is None else 'update'})"
     )
     report.actions.append(action)
@@ -960,7 +994,7 @@ async def _push_local_to_notion(
         report.notion_updated += 1
 
     storage.set_notion_fields(
-        paper.metadata.arxiv_id,
+        pid,
         notion_page_id=remote_after.page_id,
         notion_modified_at=remote_after.notion_last_edited_time,
         last_synced_at=sync_time,
@@ -971,7 +1005,7 @@ async def _push_local_to_notion(
             await client.attach_audio(remote_after.page_id, audio_path)
         except Exception as exc:
             report.warnings.append(
-                f"Audio upload failed for {paper.metadata.arxiv_id}: {exc}"
+                f"Audio upload failed for {pid}: {exc}"
             )
 
 
@@ -988,11 +1022,13 @@ def _set_local_from_remote(
     remote_ts = remote.remote_modified_at
     local_changed = False
 
+    pid = paper.metadata.paper_id
+
     # Summary
     local_summary = _load_local_summary_markdown(config, paper)
     remote_summary = remote.summary_markdown.strip()
     if remote_summary and remote_summary != local_summary:
-        report.actions.append(f"pull remote summary->{paper.metadata.arxiv_id}")
+        report.actions.append(f"pull remote summary->{pid}")
         if not dry_run:
             original_status = paper.status
             sections = parse_summary_sections(remote_summary)
@@ -1004,8 +1040,8 @@ def _set_local_from_remote(
                 model_used=paper.model_used or "notion-sync",
             )
             formatted = format_summary_file(paper.metadata, summary_result)
-            storage.save_summary(paper.metadata.arxiv_id, formatted, modified_at=remote_ts)
-            paper = storage.get_paper(paper.metadata.arxiv_id) or paper
+            storage.save_summary(pid, formatted, modified_at=remote_ts)
+            paper = storage.get_paper(pid) or paper
             paper.status = original_status
             local_changed = True
         else:
@@ -1014,7 +1050,7 @@ def _set_local_from_remote(
     # Tags
     remote_tags = _dedupe_tags(remote.tags)
     if remote_tags != _dedupe_tags(paper.tags):
-        report.actions.append(f"pull remote tags->{paper.metadata.arxiv_id}")
+        report.actions.append(f"pull remote tags->{pid}")
         if not dry_run:
             paper.tags = remote_tags
         local_changed = True
@@ -1022,7 +1058,7 @@ def _set_local_from_remote(
     # Reading status
     remote_status = _parse_reading_status(remote.reading_status)
     if remote_status and remote_status != paper.reading_status:
-        report.actions.append(f"pull remote reading_status->{paper.metadata.arxiv_id}")
+        report.actions.append(f"pull remote reading_status->{pid}")
         if not dry_run:
             paper.reading_status = remote_status
             if remote_status == ReadingStatus.ARCHIVED:
@@ -1042,7 +1078,7 @@ def _set_local_from_remote(
         report.local_updated += 1
     elif not dry_run:
         storage.set_notion_fields(
-            paper.metadata.arxiv_id,
+            pid,
             notion_page_id=remote.page_id,
             notion_modified_at=remote.notion_last_edited_time,
             last_synced_at=sync_time,
@@ -1058,22 +1094,35 @@ async def _import_remote_only(
     dry_run: bool,
     sync_time: datetime,
 ) -> None:
-    if not remote.arxiv_id:
-        report.warnings.append(f"Skipping Notion page {remote.page_id}: missing arxiv_id property.")
+    from paper_assistant.arxiv import fetch_metadata
+
+    rid = remote.paper_id
+    if not rid:
+        report.warnings.append(f"Skipping Notion page {remote.page_id}: missing arxiv_id and source_slug.")
         report.skipped += 1
         return
 
-    report.actions.append(f"import notion->{remote.arxiv_id} to local")
+    report.actions.append(f"import notion->{rid} to local")
     if dry_run:
         report.local_created += 1
         return
 
-    try:
-        metadata = await fetch_metadata(remote.arxiv_id, config=config)
-    except Exception as exc:  # pragma: no cover - exercised via integration
-        report.errors.append(f"Failed to fetch metadata for {remote.arxiv_id}: {exc}")
-        report.skipped += 1
-        return
+    if remote.arxiv_id:
+        # arXiv paper — fetch full metadata from arXiv API
+        try:
+            metadata = await fetch_metadata(remote.arxiv_id, config=config)
+        except Exception as exc:  # pragma: no cover - exercised via integration
+            report.errors.append(f"Failed to fetch metadata for {remote.arxiv_id}: {exc}")
+            report.skipped += 1
+            return
+    else:
+        # Web article — build metadata from what Notion provides
+        metadata = PaperMetadata(
+            source_type=SourceType.WEB,
+            source_slug=remote.source_slug,
+            title=remote.title or remote.source_slug or "Untitled",
+            authors=remote.authors,
+        )
 
     reading_status = _parse_reading_status(remote.reading_status) or ReadingStatus.UNREAD
     paper = Paper(
@@ -1099,8 +1148,8 @@ async def _import_remote_only(
             model_used="manual",
         )
         formatted = format_summary_file(metadata, summary_result)
-        storage.save_summary(remote.arxiv_id, formatted, modified_at=remote.remote_modified_at)
-        updated = storage.get_paper(remote.arxiv_id)
+        storage.save_summary(rid, formatted, modified_at=remote.remote_modified_at)
+        updated = storage.get_paper(rid)
         if updated:
             updated.status = ProcessingStatus.COMPLETE
             updated.notion_page_id = remote.page_id
@@ -1109,7 +1158,7 @@ async def _import_remote_only(
             storage.add_paper(updated)
 
     if remote.archived:
-        storage.set_archived(remote.arxiv_id, True, modified_at=remote.remote_modified_at)
+        storage.set_archived(rid, True, modified_at=remote.remote_modified_at)
         report.local_archived += 1
 
     report.local_created += 1
@@ -1144,10 +1193,11 @@ async def sync_notion(
         local_papers = [
             p
             for p in local_papers
-            if p.metadata.arxiv_id == paper_id or (p.notion_page_id and p.notion_page_id == paper_id)
+            if p.metadata.paper_id == paper_id or (p.notion_page_id and p.notion_page_id == paper_id)
         ]
         remote_papers = [
-            rp for rp in remote_papers if rp.page_id == paper_id or rp.arxiv_id == paper_id
+            rp for rp in remote_papers
+            if rp.page_id == paper_id or rp.arxiv_id == paper_id or rp.source_slug == paper_id
         ]
 
     remote_by_page = {rp.page_id: rp for rp in remote_papers}
@@ -1158,6 +1208,13 @@ async def sync_notion(
         existing = remote_by_arxiv.get(rp.arxiv_id)
         if existing is None or rp.notion_last_edited_time > existing.notion_last_edited_time:
             remote_by_arxiv[rp.arxiv_id] = rp
+    remote_by_slug: dict[str, NotionPaper] = {}
+    for rp in remote_papers:
+        if not rp.source_slug:
+            continue
+        existing = remote_by_slug.get(rp.source_slug)
+        if existing is None or rp.notion_last_edited_time > existing.notion_last_edited_time:
+            remote_by_slug[rp.source_slug] = rp
 
     processed_remote_ids: set[str] = set()
 
@@ -1165,8 +1222,10 @@ async def sync_notion(
         remote = None
         if paper.notion_page_id and paper.notion_page_id in remote_by_page:
             remote = remote_by_page[paper.notion_page_id]
-        elif paper.metadata.arxiv_id in remote_by_arxiv:
+        elif paper.metadata.arxiv_id and paper.metadata.arxiv_id in remote_by_arxiv:
             remote = remote_by_arxiv[paper.metadata.arxiv_id]
+        elif paper.metadata.source_slug and paper.metadata.source_slug in remote_by_slug:
+            remote = remote_by_slug[paper.metadata.source_slug]
 
         if remote is None:
             await _push_local_to_notion(
@@ -1183,10 +1242,11 @@ async def sync_notion(
 
         processed_remote_ids.add(remote.page_id)
 
+        pid = paper.metadata.paper_id
         local_archived = _should_archive(paper)
         remote_archived = remote.archived
         if local_archived or remote_archived:
-            report.actions.append(f"archive propagate->{paper.metadata.arxiv_id}")
+            report.actions.append(f"archive propagate->{pid}")
             if dry_run:
                 if not local_archived:
                     report.local_archived += 1
@@ -1195,14 +1255,14 @@ async def sync_notion(
                 continue
 
             if not local_archived:
-                storage.set_archived(paper.metadata.arxiv_id, True, modified_at=remote.remote_modified_at)
+                storage.set_archived(pid, True, modified_at=remote.remote_modified_at)
                 report.local_archived += 1
             if not remote_archived and config.notion_archive_on_delete:
                 await client.set_archived(remote.page_id, True)
                 report.notion_archived += 1
 
             storage.set_notion_fields(
-                paper.metadata.arxiv_id,
+                pid,
                 notion_page_id=remote.page_id,
                 notion_modified_at=remote.notion_last_edited_time,
                 last_synced_at=sync_time,
@@ -1233,10 +1293,10 @@ async def sync_notion(
                 sync_time=sync_time,
             )
         else:
-            report.actions.append(f"no-op->{paper.metadata.arxiv_id}")
+            report.actions.append(f"no-op->{pid}")
             if not dry_run:
                 storage.set_notion_fields(
-                    paper.metadata.arxiv_id,
+                    pid,
                     notion_page_id=remote.page_id,
                     notion_modified_at=remote.notion_last_edited_time,
                     last_synced_at=sync_time,
