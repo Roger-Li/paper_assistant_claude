@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import mistune
+from pygments.lexers import guess_lexer
 
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
@@ -24,6 +25,86 @@ from paper_assistant.summarizer import (
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+
+# Notion's supported code block language values.
+NOTION_LANGUAGES: set[str] = {
+    "abap", "arduino", "bash", "basic", "c", "clojure", "coffeescript",
+    "c++", "c#", "css", "dart", "diff", "docker", "elixir", "elm",
+    "erlang", "flow", "fortran", "f#", "gherkin", "glsl", "go", "graphql",
+    "groovy", "haskell", "html", "java", "javascript", "json", "julia",
+    "kotlin", "latex", "less", "lisp", "livescript", "lua", "makefile",
+    "markdown", "markup", "matlab", "mermaid", "nix", "objective-c",
+    "ocaml", "pascal", "perl", "php", "plain text", "powershell", "prolog",
+    "protobuf", "python", "r", "reason", "ruby", "rust", "sass", "scala",
+    "scheme", "scss", "shell", "sql", "swift", "typescript", "vb.net",
+    "verilog", "vhdl", "visual basic", "webassembly", "xml", "yaml",
+    "java/c/c++/c#",
+}
+
+# Maps common markdown fence aliases and Pygments lexer names to Notion values.
+_LANG_ALIAS_TO_NOTION: dict[str, str] = {
+    # Python
+    "py": "python", "python3": "python",
+    # JavaScript / TypeScript
+    "js": "javascript", "jsx": "javascript",
+    "ts": "typescript", "tsx": "typescript",
+    # Shell
+    "sh": "shell", "zsh": "shell", "fish": "shell",
+    # C family
+    "cpp": "c++", "cxx": "c++", "c++": "c++",
+    "cs": "c#", "csharp": "c#",
+    "objc": "objective-c", "objectivec": "objective-c",
+    # Markup / config
+    "yml": "yaml",
+    "tex": "latex",
+    "md": "markdown",
+    "htm": "html",
+    # Other
+    "rb": "ruby",
+    "rs": "rust",
+    "hs": "haskell",
+    "pl": "perl",
+    "dockerfile": "docker",
+    "make": "makefile",
+    "ps1": "powershell",
+    "graphql": "graphql", "gql": "graphql",
+    "proto": "protobuf",
+    "ml": "ocaml",
+    "fs": "f#", "fsharp": "f#",
+    "vb": "visual basic",
+    "wasm": "webassembly", "wat": "webassembly",
+}
+
+
+def _normalize_code_language(language: str, code: str) -> str:
+    """Resolve a markdown fence language tag to a Notion-supported language.
+
+    If *language* is empty (unfenced or bare ```), uses Pygments to guess
+    the language from the code content.  Falls back to ``"plain text"``.
+    """
+    lang = language.strip().lower()
+
+    # Already a valid Notion language.
+    if lang in NOTION_LANGUAGES:
+        return lang
+
+    # Known alias → Notion value.
+    if lang in _LANG_ALIAS_TO_NOTION:
+        return _LANG_ALIAS_TO_NOTION[lang]
+
+    # No language hint — try auto-detection via Pygments.
+    if not lang and code.strip():
+        try:
+            lexer = guess_lexer(code)
+            detected = (lexer.aliases[0] if lexer.aliases else "").lower()
+            if detected in NOTION_LANGUAGES:
+                return detected
+            if detected in _LANG_ALIAS_TO_NOTION:
+                return _LANG_ALIAS_TO_NOTION[detected]
+        except Exception:
+            pass
+
+    return "plain text"
 
 
 def _utc_now() -> datetime:
@@ -276,8 +357,9 @@ def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"object": "block", "type": "quote", "quote": {"rich_text": rt}}]
 
     if ntype == "block_code":
-        language = node.get("attrs", {}).get("info", "") or "plain text"
+        raw_lang = node.get("attrs", {}).get("info", "") or ""
         raw = node.get("raw", "").rstrip("\n")
+        language = _normalize_code_language(raw_lang, raw)
         return [
             {
                 "object": "block",

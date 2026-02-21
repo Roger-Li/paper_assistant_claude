@@ -10,7 +10,13 @@ import pytest
 
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
-from paper_assistant.notion import NotionPaper, sync_notion, _markdown_to_blocks, _blocks_to_markdown
+from paper_assistant.notion import (
+    NotionPaper,
+    sync_notion,
+    _markdown_to_blocks,
+    _blocks_to_markdown,
+    _normalize_code_language,
+)
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
 
@@ -493,6 +499,81 @@ class TestMarkdownToBlocks:
         code_blocks = _find_block(blocks, "code")
         assert len(code_blocks) == 1
         assert code_blocks[0]["code"]["language"] == "python"
+
+    def test_code_block_language_alias_mapping(self):
+        """Markdown fence aliases like js/ts/sh should map to Notion language names."""
+        cases = [
+            ("js", "javascript"),
+            ("ts", "typescript"),
+            ("sh", "shell"),
+            ("py", "python"),
+            ("cpp", "c++"),
+            ("cs", "c#"),
+            ("yml", "yaml"),
+            ("rb", "ruby"),
+            ("rs", "rust"),
+            ("dockerfile", "docker"),
+        ]
+        for alias, expected in cases:
+            md = f"```{alias}\nsome code\n```"
+            blocks = _markdown_to_blocks(md)
+            code_blocks = _find_block(blocks, "code")
+            assert len(code_blocks) == 1, f"No code block for alias {alias!r}"
+            actual = code_blocks[0]["code"]["language"]
+            assert actual == expected, (
+                f"Alias {alias!r}: expected {expected!r}, got {actual!r}"
+            )
+
+    def test_code_block_no_language_auto_detect_python(self):
+        """Bare ``` with Python code should auto-detect as python."""
+        md = "```\nimport os\n\ndef main():\n    print(os.getcwd())\n```"
+        blocks = _markdown_to_blocks(md)
+        code_blocks = _find_block(blocks, "code")
+        assert len(code_blocks) == 1
+        assert code_blocks[0]["code"]["language"] == "python"
+
+    def test_code_block_no_language_auto_detect_bash(self):
+        """Bare ``` with bash shebang should auto-detect as bash."""
+        md = "```\n#!/bin/bash\nfor f in *.txt; do\n  echo \"$f\"\ndone\n```"
+        blocks = _markdown_to_blocks(md)
+        code_blocks = _find_block(blocks, "code")
+        assert len(code_blocks) == 1
+        assert code_blocks[0]["code"]["language"] == "bash"
+
+    def test_code_block_explicit_language_preserved(self):
+        """Explicit valid Notion language should pass through unchanged."""
+        for lang in ("python", "javascript", "rust", "sql", "bash"):
+            md = f"```{lang}\ncode here\n```"
+            blocks = _markdown_to_blocks(md)
+            code_blocks = _find_block(blocks, "code")
+            assert code_blocks[0]["code"]["language"] == lang
+
+    def test_code_block_unknown_falls_back_to_plain_text(self):
+        """Completely ambiguous code with no hint should fall back to plain text."""
+        # Single word — too ambiguous for reliable detection
+        assert _normalize_code_language("", "x") == "plain text"
+
+    def test_normalize_code_language_direct(self):
+        """Unit tests for _normalize_code_language covering all branches."""
+        # Already valid Notion language
+        assert _normalize_code_language("python", "") == "python"
+        assert _normalize_code_language("javascript", "") == "javascript"
+
+        # Known alias mapping
+        assert _normalize_code_language("js", "") == "javascript"
+        assert _normalize_code_language("ts", "") == "typescript"
+        assert _normalize_code_language("cpp", "") == "c++"
+
+        # Case-insensitive
+        assert _normalize_code_language("Python", "") == "python"
+        assert _normalize_code_language("JS", "") == "javascript"
+
+        # Empty with no code → plain text
+        assert _normalize_code_language("", "") == "plain text"
+        assert _normalize_code_language("", "   ") == "plain text"
+
+        # Unknown non-empty alias with no code → plain text
+        assert _normalize_code_language("invented-lang-xyz", "") == "plain text"
 
     def test_quote_block(self):
         blocks = _markdown_to_blocks("> a wise quote")
