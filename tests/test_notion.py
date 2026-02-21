@@ -622,3 +622,93 @@ class TestBlocksToMarkdown:
         ]
         md = _blocks_to_markdown(blocks)
         assert "---" in md
+
+    def test_table_block(self):
+        blocks = [
+            {
+                "type": "table",
+                "table": {
+                    "table_width": 2,
+                    "has_column_header": True,
+                    "children": [
+                        {
+                            "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"plain_text": "Name"}],
+                                    [{"plain_text": "Role"}],
+                                ]
+                            },
+                        },
+                        {
+                            "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"plain_text": "Alice"}],
+                                    [{"plain_text": "Engineer"}],
+                                ]
+                            },
+                        },
+                    ],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "| Name | Role |" in md
+        assert "|---|---|" in md or "| --- | --- |" in md
+        assert "| Alice | Engineer |" in md
+
+
+class TestMarkdownTableToBlocks:
+    def test_basic_table(self):
+        md = "| A | B |\n|---|---|\n| 1 | 2 |"
+        blocks = _markdown_to_blocks(md)
+        assert len(blocks) == 1
+        table = blocks[0]
+        assert table["type"] == "table"
+        payload = table["table"]
+        assert payload["table_width"] == 2
+        assert payload["has_column_header"] is True
+        rows = payload["children"]
+        assert len(rows) == 2  # header + 1 body row
+        # Header row
+        header_cells = rows[0]["table_row"]["cells"]
+        assert len(header_cells) == 2
+        assert header_cells[0][0]["text"]["content"] == "A"
+        assert header_cells[1][0]["text"]["content"] == "B"
+        # Body row
+        body_cells = rows[1]["table_row"]["cells"]
+        assert body_cells[0][0]["text"]["content"] == "1"
+        assert body_cells[1][0]["text"]["content"] == "2"
+
+    def test_table_with_inline_formatting(self):
+        md = "| Feature | Status |\n|---|---|\n| **GRPO** | `enabled` |"
+        blocks = _markdown_to_blocks(md)
+        table = blocks[0]
+        body_row = table["table"]["children"][1]
+        first_cell = body_row["table_row"]["cells"][0]
+        bold_items = [r for r in first_cell if r.get("annotations", {}).get("bold")]
+        assert len(bold_items) >= 1
+        second_cell = body_row["table_row"]["cells"][1]
+        code_items = [r for r in second_cell if r.get("annotations", {}).get("code")]
+        assert len(code_items) >= 1
+
+    def test_multi_row_table(self):
+        md = (
+            "| Component | Role |\n"
+            "|---|---|\n"
+            "| GRPO | RL optimizer |\n"
+            "| Rule-based rewards | Accuracy + format |\n"
+            "| Cold-start SFT | Stabilize early RL |"
+        )
+        blocks = _markdown_to_blocks(md)
+        table = blocks[0]
+        rows = table["table"]["children"]
+        assert len(rows) == 4  # 1 header + 3 body rows
+
+    def test_table_roundtrip(self):
+        md = "| X | Y |\n|---|---|\n| a | b |"
+        blocks = _markdown_to_blocks(md)
+        result = _blocks_to_markdown(blocks)
+        assert "| X | Y |" in result
+        assert "| a | b |" in result

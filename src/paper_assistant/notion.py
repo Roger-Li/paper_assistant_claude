@@ -43,7 +43,15 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 
 
 def _read_plain_text(items: list[dict[str, Any]]) -> str:
-    return "".join(item.get("plain_text", "") for item in items)
+    parts: list[str] = []
+    for item in items:
+        pt = item.get("plain_text", "")
+        if not pt:
+            pt = item.get("text", {}).get("content", "")
+        if not pt and item.get("type") == "equation":
+            pt = item.get("equation", {}).get("expression", "")
+        parts.append(pt)
+    return "".join(parts)
 
 
 def _to_rich_text(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
@@ -69,7 +77,7 @@ def _to_rich_text(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
 
 _CHUNK_LIMIT = 1800
 
-_md_parser = mistune.create_markdown(renderer=None, plugins=["math", "strikethrough"])
+_md_parser = mistune.create_markdown(renderer=None, plugins=["math", "strikethrough", "table"])
 
 # Match $$...$$ anywhere (inline or block) and normalise to the
 # three-line format that mistune's math plugin expects for block_math:
@@ -294,6 +302,52 @@ def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
     if ntype == "thematic_break":
         return [{"object": "block", "type": "divider", "divider": {}}]
 
+    if ntype == "table":
+        # Collect all rows: header cells first, then body rows
+        rows: list[list[dict[str, Any]]] = []
+        has_header = False
+        for section in node.get("children", []):
+            stype = section.get("type", "")
+            if stype == "table_head":
+                has_header = True
+                header_cells = section.get("children", [])
+                rows.append(header_cells)
+            elif stype == "table_body":
+                for row_node in section.get("children", []):
+                    rows.append(row_node.get("children", []))
+        if not rows:
+            return []
+        table_width = max(len(r) for r in rows)
+        notion_rows: list[dict[str, Any]] = []
+        for row_cells in rows:
+            cells: list[list[dict[str, Any]]] = []
+            for cell_node in row_cells:
+                cell_rt = _chunk_rich_text(
+                    _inline_to_rich_text(cell_node.get("children", []))
+                ) or _to_rich_text("")
+                cells.append(cell_rt)
+            # Pad to table_width if row has fewer cells
+            while len(cells) < table_width:
+                cells.append(_to_rich_text(""))
+            notion_rows.append(
+                {
+                    "object": "block",
+                    "type": "table_row",
+                    "table_row": {"cells": cells},
+                }
+            )
+        return [
+            {
+                "object": "block",
+                "type": "table",
+                "table": {
+                    "table_width": table_width,
+                    "has_column_header": has_header,
+                    "children": notion_rows,
+                },
+            }
+        ]
+
     if ntype == "blank_line":
         return []
 
@@ -376,6 +430,19 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
             lines.append(f"{prefix}$$")
         elif block_type == "divider":
             lines.append(f"{prefix}---")
+        elif block_type == "table":
+            table_rows = payload.get("children", [])
+            for i, row_block in enumerate(table_rows):
+                row_payload = row_block.get("table_row", {})
+                cells = row_payload.get("cells", [])
+                cell_texts = [
+                    _read_plain_text(cell).strip() for cell in cells
+                ]
+                lines.append(f"{prefix}| " + " | ".join(cell_texts) + " |")
+                if i == 0 and payload.get("has_column_header"):
+                    lines.append(
+                        f"{prefix}| " + " | ".join("---" for _ in cells) + " |"
+                    )
         elif block_type == "paragraph":
             lines.append(f"{prefix}{text}" if text else "")
 
