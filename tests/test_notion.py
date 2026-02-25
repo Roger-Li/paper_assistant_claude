@@ -410,6 +410,45 @@ def _find_block(blocks, block_type):
     return [b for b in blocks if b["type"] == block_type]
 
 
+class TestRemoteModifiedAt:
+    """Tests for NotionPaper.remote_modified_at property."""
+
+    def _make_paper(self, summary_last_modified, notion_last_edited_time):
+        return NotionPaper(
+            page_id="page-1",
+            arxiv_id="2601.19897",
+            source_slug=None,
+            title="Test",
+            authors=["Author"],
+            tags=[],
+            reading_status="unread",
+            summary_markdown="",
+            summary_last_modified=summary_last_modified,
+            local_last_modified=None,
+            archived=False,
+            notion_last_edited_time=notion_last_edited_time,
+        )
+
+    def test_no_summary_modified_falls_back_to_last_edited(self):
+        edited = datetime(2026, 2, 24, 12, 0, tzinfo=timezone.utc)
+        p = self._make_paper(summary_last_modified=None, notion_last_edited_time=edited)
+        assert p.remote_modified_at == edited
+
+    def test_manual_edit_newer_than_summary_modified(self):
+        """When a user edits Notion after a sync, last_edited_time is newer."""
+        synced = datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc)
+        edited = datetime(2026, 2, 24, 15, 0, tzinfo=timezone.utc)
+        p = self._make_paper(summary_last_modified=synced, notion_last_edited_time=edited)
+        assert p.remote_modified_at == edited
+
+    def test_summary_modified_newer_than_last_edited(self):
+        """When summary_last_modified is newer (edge case), it wins."""
+        synced = datetime(2026, 2, 24, 15, 0, tzinfo=timezone.utc)
+        edited = datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc)
+        p = self._make_paper(summary_last_modified=synced, notion_last_edited_time=edited)
+        assert p.remote_modified_at == synced
+
+
 def _rich_text(block):
     return block[block["type"]]["rich_text"]
 

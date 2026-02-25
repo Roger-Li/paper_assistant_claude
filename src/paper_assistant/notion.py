@@ -577,7 +577,9 @@ class NotionPaper:
 
     @property
     def remote_modified_at(self) -> datetime:
-        return self.summary_last_modified or self.notion_last_edited_time
+        if self.summary_last_modified:
+            return max(self.summary_last_modified, self.notion_last_edited_time)
+        return self.notion_last_edited_time
 
 
 @dataclass
