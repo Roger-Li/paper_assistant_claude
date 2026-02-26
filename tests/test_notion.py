@@ -16,6 +16,7 @@ from paper_assistant.notion import (
     _markdown_to_blocks,
     _blocks_to_markdown,
     _normalize_code_language,
+    _read_rich_markdown,
 )
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
@@ -832,3 +833,164 @@ class TestMarkdownTableToBlocks:
         result = _blocks_to_markdown(blocks)
         assert "| X | Y |" in result
         assert "| a | b |" in result
+
+
+class TestReadRichMarkdown:
+    """Tests for _read_rich_markdown preserving inline formatting."""
+
+    def test_plain_text(self):
+        items = [{"plain_text": "hello world"}]
+        assert _read_rich_markdown(items) == "hello world"
+
+    def test_bold(self):
+        items = [{"plain_text": "bold", "annotations": {"bold": True}}]
+        assert _read_rich_markdown(items) == "**bold**"
+
+    def test_italic(self):
+        items = [{"plain_text": "italic", "annotations": {"italic": True}}]
+        assert _read_rich_markdown(items) == "*italic*"
+
+    def test_code(self):
+        items = [{"plain_text": "x = 1", "annotations": {"code": True}}]
+        assert _read_rich_markdown(items) == "`x = 1`"
+
+    def test_strikethrough(self):
+        items = [{"plain_text": "old", "annotations": {"strikethrough": True}}]
+        assert _read_rich_markdown(items) == "~~old~~"
+
+    def test_link(self):
+        items = [
+            {
+                "plain_text": "click here",
+                "text": {"content": "click here", "link": {"url": "https://example.com"}},
+            }
+        ]
+        assert _read_rich_markdown(items) == "[click here](https://example.com)"
+
+    def test_inline_equation(self):
+        items = [{"type": "equation", "equation": {"expression": "E=mc^2"}}]
+        assert _read_rich_markdown(items) == "$E=mc^2$"
+
+    def test_mixed_formatting(self):
+        items = [
+            {"plain_text": "See "},
+            {"plain_text": "bold", "annotations": {"bold": True}},
+            {"plain_text": " and "},
+            {"type": "equation", "equation": {"expression": "x^2"}},
+            {"plain_text": " here"},
+        ]
+        result = _read_rich_markdown(items)
+        assert result == "See **bold** and $x^2$ here"
+
+    def test_bold_italic_combined(self):
+        items = [{"plain_text": "text", "annotations": {"bold": True, "italic": True}}]
+        assert _read_rich_markdown(items) == "***text***"
+
+
+class TestBlocksToMarkdownRichFormatting:
+    """Tests that _blocks_to_markdown preserves inline formatting."""
+
+    def test_paragraph_with_bold(self):
+        blocks = [
+            {
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {"plain_text": "This is "},
+                        {"plain_text": "important", "annotations": {"bold": True}},
+                        {"plain_text": " text"},
+                    ]
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "This is **important** text" in md
+
+    def test_paragraph_with_inline_math(self):
+        blocks = [
+            {
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {"plain_text": "The formula "},
+                        {"type": "equation", "equation": {"expression": "E=mc^2"}},
+                        {"plain_text": " is famous"},
+                    ]
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "The formula $E=mc^2$ is famous" in md
+
+    def test_bullet_with_inline_code(self):
+        blocks = [
+            {
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [
+                        {"plain_text": "Use "},
+                        {"plain_text": "pip install", "annotations": {"code": True}},
+                    ]
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "- Use `pip install`" in md
+
+    def test_code_block_not_enriched(self):
+        """Code block content should remain plain text, not get markdown formatting."""
+        blocks = [
+            {
+                "type": "code",
+                "code": {
+                    "language": "python",
+                    "rich_text": [{"plain_text": "x = 1"}],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "```python" in md
+        assert "x = 1" in md
+
+    def test_table_with_formatted_cells(self):
+        blocks = [
+            {
+                "type": "table",
+                "table": {
+                    "table_width": 2,
+                    "has_column_header": True,
+                    "children": [
+                        {
+                            "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"plain_text": "Feature"}],
+                                    [{"plain_text": "Status"}],
+                                ]
+                            },
+                        },
+                        {
+                            "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"plain_text": "GRPO", "annotations": {"bold": True}}],
+                                    [{"plain_text": "enabled", "annotations": {"code": True}}],
+                                ]
+                            },
+                        },
+                    ],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "| Feature | Status |" in md
+        assert "| **GRPO** | `enabled` |" in md
+
+    def test_inline_formatting_roundtrip(self):
+        """Markdown with inline formatting → Notion blocks → back to markdown."""
+        md = "This has **bold** and `code` and *italic* text"
+        blocks = _markdown_to_blocks(md)
+        result = _blocks_to_markdown(blocks)
+        assert "**bold**" in result
+        assert "`code`" in result
+        assert "*italic*" in result

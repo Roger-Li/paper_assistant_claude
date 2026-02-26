@@ -135,6 +135,42 @@ def _read_plain_text(items: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def _read_rich_markdown(items: list[dict[str, Any]]) -> str:
+    """Convert Notion rich_text items back to markdown, preserving formatting."""
+    parts: list[str] = []
+    for item in items:
+        item_type = item.get("type", "")
+        if item_type == "equation":
+            expr = item.get("equation", {}).get("expression", "")
+            parts.append(f"${expr}$")
+            continue
+
+        raw = item.get("plain_text", "")
+        if not raw:
+            raw = item.get("text", {}).get("content", "")
+        if not raw:
+            continue
+
+        ann = item.get("annotations", {})
+        link_url = item.get("text", {}).get("link", {})
+        if link_url:
+            link_url = link_url.get("url", "")
+
+        segment = raw
+        if ann.get("code"):
+            segment = f"`{segment}`"
+        if ann.get("bold"):
+            segment = f"**{segment}**"
+        if ann.get("italic"):
+            segment = f"*{segment}*"
+        if ann.get("strikethrough"):
+            segment = f"~~{segment}~~"
+        if link_url:
+            segment = f"[{segment}]({link_url})"
+        parts.append(segment)
+    return "".join(parts)
+
+
 def _to_rich_text(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
     """Simple plain-text rich_text builder (fallback for non-markdown contexts)."""
     text = text or ""
@@ -476,7 +512,7 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
         block_type = block.get("type")
         payload = block.get(block_type, {}) if block_type else {}
         rich_text = payload.get("rich_text", [])
-        text = _read_plain_text(rich_text).strip()
+        text = _read_rich_markdown(rich_text).strip()
 
         if block_type == "heading_1":
             lines.append(f"{prefix}# {text}")
@@ -502,8 +538,9 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
             lines.append(f"{prefix}> {text}")
         elif block_type == "code":
             lang = payload.get("language", "")
+            code_text = _read_plain_text(rich_text).strip()
             lines.append(f"{prefix}```{lang}".rstrip())
-            lines.append(text)
+            lines.append(code_text)
             lines.append(f"{prefix}```")
         elif block_type == "equation":
             expr = payload.get("expression", "")
@@ -518,7 +555,7 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
                 row_payload = row_block.get("table_row", {})
                 cells = row_payload.get("cells", [])
                 cell_texts = [
-                    _read_plain_text(cell).strip() for cell in cells
+                    _read_rich_markdown(cell).strip() for cell in cells
                 ]
                 lines.append(f"{prefix}| " + " | ".join(cell_texts) + " |")
                 if i == 0 and payload.get("has_column_header"):
@@ -846,7 +883,7 @@ class NotionClient:
             notion_last_edited_time=notion_last_edited,
         )
 
-    _LIST_BLOCK_TYPES = {"bulleted_list_item", "numbered_list_item"}
+    _CHILD_BLOCK_TYPES = {"bulleted_list_item", "numbered_list_item", "table"}
 
     async def _fetch_blocks(self, parent_id: str) -> list[dict[str, Any]]:
         """Paginate through all child blocks of a parent."""
@@ -872,7 +909,7 @@ class NotionClient:
         blocks = await self._fetch_blocks(parent_id)
         for block in blocks:
             btype = block.get("type", "")
-            if block.get("has_children") and btype in self._LIST_BLOCK_TYPES:
+            if block.get("has_children") and btype in self._CHILD_BLOCK_TYPES:
                 children = await self._fetch_blocks_recursive(block["id"])
                 block[btype]["children"] = children
         return blocks

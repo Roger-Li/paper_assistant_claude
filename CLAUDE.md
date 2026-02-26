@@ -158,7 +158,8 @@ If touching Notion sync paths, verify:
 - archive propagation is soft (no local hard delete)
 - markdown formatting (bold, italic, code, links, math) renders in Notion
 - nested bullet/numbered lists preserve hierarchy via Notion `children` arrays
-- `fetch_page_markdown` recursively fetches nested block children
+- `fetch_page_markdown` recursively fetches nested block children (lists and tables)
+- `_read_rich_markdown` preserves inline formatting (bold, italic, code, strikethrough, links, math) when converting Notion rich_text back to markdown; `_read_plain_text` is only for non-markdown contexts
 
 ## Testing Expectations
 
