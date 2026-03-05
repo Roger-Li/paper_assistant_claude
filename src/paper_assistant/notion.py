@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -204,9 +205,63 @@ _md_parser = mistune.create_markdown(renderer=None, plugins=["math", "strikethro
 _DISPLAY_MATH_RE = re.compile(r"\$\$\s*(.+?)\s*\$\$", re.DOTALL)
 
 
+_CODE_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+
+
+def _iter_lines_with_fence_state(md: str) -> Iterator[tuple[str, bool]]:
+    """Yield ``(line, in_table_row)`` pairs, tracking fenced code block state.
+
+    A line is considered a table row when it starts with ``|`` and is NOT
+    inside a fenced code block (``` or ~~~).
+    """
+    in_fence = False
+    fence_marker = ""
+    for line in md.split("\n"):
+        m = _CODE_FENCE_RE.match(line.lstrip())
+        if m:
+            if not in_fence:
+                in_fence = True
+                fence_marker = m.group(1)[0] * len(m.group(1))
+            elif line.lstrip().startswith(fence_marker) and line.strip() == fence_marker:
+                in_fence = False
+                fence_marker = ""
+        is_table = not in_fence and line.lstrip().startswith("|")
+        yield line, is_table
+
+
+def _escape_math_pipes_in_tables(md: str) -> str:
+    """In table rows, replace ``|`` inside ``$...$`` with ``\\vert `` to prevent cell splitting.
+
+    Lines inside fenced code blocks are left untouched.
+    """
+    result: list[str] = []
+    for line, is_table in _iter_lines_with_fence_state(md):
+        if is_table:
+            line = re.sub(
+                r"\$([^$]+?)\$",
+                lambda m: "$" + m.group(1).replace("|", "\\vert ") + "$",
+                line,
+            )
+        result.append(line)
+    return "\n".join(result)
+
+
 def _normalise_display_math(md: str) -> str:
-    """Rewrite ``$$...$$`` into the three-line block format mistune requires."""
-    return _DISPLAY_MATH_RE.sub(lambda m: f"\n\n$$\n{m.group(1)}\n$$\n\n", md)
+    """Rewrite ``$$...$$`` into the three-line block format mistune requires.
+
+    Inside table rows (lines starting with ``|``), display math ``$$...$$``
+    is downgraded to inline math ``$...$`` instead, because the multi-line
+    expansion would break the table row structure.
+
+    Lines inside fenced code blocks are left untouched.
+    """
+    processed: list[str] = []
+    for line, is_table in _iter_lines_with_fence_state(md):
+        if is_table:
+            processed.append(re.sub(r"\$\$\s*(.+?)\s*\$\$", r"$\1$", line))
+        else:
+            processed.append(line)
+    return _DISPLAY_MATH_RE.sub(lambda m: f"\n\n$$\n{m.group(1)}\n$$\n\n", "\n".join(processed))
 
 
 def _inline_to_rich_text(
@@ -484,7 +539,9 @@ def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _markdown_to_blocks(markdown: str) -> list[dict[str, Any]]:
     """Convert markdown into Notion blocks with full inline formatting and math."""
-    ast = _md_parser(_normalise_display_math(markdown or ""))
+    md = _escape_math_pipes_in_tables(markdown or "")
+    md = _normalise_display_math(md)
+    ast = _md_parser(md)
     if not isinstance(ast, list):
         ast = []
 

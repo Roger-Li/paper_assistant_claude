@@ -834,6 +834,65 @@ class TestMarkdownTableToBlocks:
         assert "| X | Y |" in result
         assert "| a | b |" in result
 
+    def test_table_with_inline_math(self):
+        md = "| Name | Formula |\n|---|---|\n| Energy | $E=mc^2$ |"
+        blocks = _markdown_to_blocks(md)
+        table = blocks[0]
+        body_row = table["table"]["children"][1]
+        formula_cell = body_row["table_row"]["cells"][1]
+        eq_items = [r for r in formula_cell if r.get("type") == "equation"]
+        assert len(eq_items) == 1
+        assert eq_items[0]["equation"]["expression"] == "E=mc^2"
+
+    def test_table_with_display_math_downgraded(self):
+        """$$...$$ inside a table cell should be downgraded to inline math, not break the table."""
+        md = "| A | B |\n|---|---|\n| x | $$\\sum x$$ |"
+        blocks = _markdown_to_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "table"
+        body_row = blocks[0]["table"]["children"][1]
+        math_cell = body_row["table_row"]["cells"][1]
+        eq_items = [r for r in math_cell if r.get("type") == "equation"]
+        assert len(eq_items) == 1
+
+    def test_table_with_pipe_in_math(self):
+        """Pipe characters inside math in table cells should not split cells."""
+        md = "| Concept | Formula |\n|---|---|\n| Abs | $|x|$ |"
+        blocks = _markdown_to_blocks(md)
+        table = blocks[0]
+        assert table["table"]["table_width"] == 2
+        body_row = table["table"]["children"][1]
+        formula_cell = body_row["table_row"]["cells"][1]
+        eq_items = [r for r in formula_cell if r.get("type") == "equation"]
+        assert len(eq_items) == 1
+        expr = eq_items[0]["equation"]["expression"]
+        assert "\\vert" in expr
+        # Ensure \vert has a trailing space so LaTeX doesn't merge with next char
+        assert "\\vertx" not in expr
+
+
+    def test_pipe_in_math_inside_code_block_not_escaped(self):
+        """Pipe chars inside $...$ within a fenced code block must NOT be escaped."""
+        md = "```latex\n| $|x|$ |\n```"
+        blocks = _markdown_to_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "code"
+        content = blocks[0]["code"]["rich_text"][0]["text"]["content"]
+        assert "| $|x|$ |" in content
+        assert "vert" not in content
+
+
+class TestMermaidCodeBlock:
+    def test_mermaid_block(self):
+        md = '```mermaid\ngraph TD\n    A --> B\n```'
+        blocks = _markdown_to_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "code"
+        assert blocks[0]["code"]["language"] == "mermaid"
+        content = blocks[0]["code"]["rich_text"][0]["text"]["content"]
+        assert "graph TD" in content
+        assert "A --> B" in content
+
 
 class TestReadRichMarkdown:
     """Tests for _read_rich_markdown preserving inline formatting."""

@@ -160,6 +160,8 @@ If touching Notion sync paths, verify:
 - nested bullet/numbered lists preserve hierarchy via Notion `children` arrays
 - `fetch_page_markdown` recursively fetches nested block children (lists and tables)
 - `_read_rich_markdown` preserves inline formatting (bold, italic, code, strikethrough, links, math) when converting Notion rich_text back to markdown; `_read_plain_text` is only for non-markdown contexts
+- Math in table cells: `_escape_math_pipes_in_tables` replaces `|` with `\vert ` inside `$...$` in table rows to prevent cell splitting; `_normalise_display_math` downgrades `$$...$$` to `$...$` in table rows to prevent breaking table structure. Both functions skip lines inside fenced code blocks.
+- Mermaid code blocks are stored as Notion code blocks with language `"mermaid"`; Notion may not render them as diagrams when created via API (platform limitation)
 
 ## Testing Expectations
 
@@ -197,6 +199,9 @@ A task is complete only when all are true:
 5. Batch import for multiple arXiv entries + summary files.
 6. Search across titles/tags/summaries.
 7. ~~Support non-arXiv web articles (blog posts, technical articles).~~ (Done — see `docs/design-web-article-support.md`)
+8. Refactor: Extract shared pipeline logic from `cli.py` and `web/routes.py` into a `pipeline.py` module. Both files duplicate add/import workflows 4× (add/import × arxiv/web). (~400 lines of duplication.)
+9. Refactor: Split `NotionClient` in `notion.py` (470 LOC) — extract property mapping, block fetching, and page building into focused helpers.
+10. Refactor: Break `_ast_node_to_blocks` (143 LOC) into per-block-type sub-functions for tables, lists, and code blocks.
 
 ## Non-Goals (Current)
 
