@@ -169,15 +169,17 @@ paper-assist serve
 
 Key URLs:
 - UI list page: `GET /`
-- Paper details: `GET /paper/{arxiv_id}`
+- Paper details: `GET /paper/{paper_id}`
 - RSS feed: `GET /feed.xml`
 - Paper list JSON: `GET /api/papers`
+- Bulk tag rename: `PUT /api/tags/rename`
 - Notion sync preview: `GET /api/notion/sync/preview`
 - Notion sync run: `POST /api/notion/sync`
 
 Features:
 - **Sorting**: click "Sort by" links on the papers list to sort by date added, title, tag, or arXiv ID
 - **Filtering**: filter papers by processing status, reading status, or tag
+- **Bulk tag edits**: from the list page, apply one or more `old => new` tag renames across all local papers; if the target tag already exists on a paper, the tags merge automatically
 - **Reading status**: mark papers as unread/read/archived directly from the list page via inline dropdown
 - **Reader Mode**: on a paper detail page, use browser-native "read from here" playback with sentence highlighting while keeping technical blocks visible; use `K` or `Space` to pause/resume and `Escape` to stop (separate from generated MP3 audio)
 - **Edit summary**: on a paper detail page, click "Edit Summary" to modify the markdown and optionally regenerate audio
@@ -201,6 +203,16 @@ curl -X POST "http://127.0.0.1:8877/api/import" \
 
 # List papers filtered by tag
 curl "http://127.0.0.1:8877/api/papers?tag=manual"
+
+# Rename tags across all local papers
+curl -X PUT "http://127.0.0.1:8877/api/tags/rename" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "renames": [
+      {"from_tag": "post-training", "to_tag": "Post-training"},
+      {"from_tag": "Reranking", "to_tag": "Re-ranker"}
+    ]
+  }'
 
 # Preview notion sync for one paper
 curl "http://127.0.0.1:8877/api/notion/sync/preview?paper=2503.10291"

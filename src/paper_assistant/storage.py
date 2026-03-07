@@ -173,6 +173,65 @@ class StorageManager:
         self.save_index()
         return paper.tags
 
+    def rename_tags(
+        self,
+        renames: list[tuple[str, str]],
+        modified_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Rename tags across all papers, merging into existing target tags."""
+        index = self.load_index()
+        normalized_renames: list[tuple[str, str]] = []
+        for old_tag, new_tag in renames:
+            old = old_tag.strip()
+            new = new_tag.strip()
+            if old and new and old != new:
+                normalized_renames.append((old, new))
+
+        if not normalized_renames:
+            return {"renames": [], "papers_updated": 0}
+
+        effective_modified_at = modified_at or datetime.now(timezone.utc)
+        changed_paper_ids: set[str] = set()
+        rename_reports: list[dict[str, object]] = []
+
+        for old_tag, new_tag in normalized_renames:
+            updated_paper_ids: set[str] = set()
+            for paper_id, paper in index.papers.items():
+                if old_tag not in paper.tags:
+                    continue
+
+                updated_tags: list[str] = []
+                saw_target = False
+                for tag in paper.tags:
+                    mapped_tag = new_tag if tag == old_tag else tag
+                    if mapped_tag == new_tag:
+                        if saw_target:
+                            continue
+                        saw_target = True
+                    updated_tags.append(mapped_tag)
+
+                if updated_tags != paper.tags:
+                    paper.tags = updated_tags
+                    self._mark_local_modified(paper, effective_modified_at)
+                    updated_paper_ids.add(paper_id)
+                    changed_paper_ids.add(paper_id)
+
+            rename_reports.append(
+                {
+                    "from_tag": old_tag,
+                    "to_tag": new_tag,
+                    "updated_papers": len(updated_paper_ids),
+                }
+            )
+
+        if changed_paper_ids:
+            self.save_index()
+
+        return {
+            "renames": rename_reports,
+            "papers_updated": len(changed_paper_ids),
+        }
+
     def set_reading_status(
         self,
         paper_id: str,

@@ -66,6 +66,17 @@
     &middot; <a href="{{ filter_url('tag', tag) }}" {% if active_tag == tag %}class="contrast"{% endif %}>{{ tag }}</a>
     {% endfor %}
 </p>
+
+<details>
+    <summary>Bulk edit tags</summary>
+    <p><small>Apply local tag renames to every paper. Use one change per line in the form <code>old =&gt; new</code>. If the target tag already exists on a paper, the tags are merged automatically.</small></p>
+    <form id="rename-tags-form">
+        <label for="rename-tags-input">Tag changes</label>
+        <textarea id="rename-tags-input" rows="4" placeholder="post-training => Post-training&#10;Reranking => Re-ranker"></textarea>
+        <button type="submit">Apply Tag Changes</button>
+    </form>
+    <div id="rename-tags-status"></div>
+</details>
 {% endif %}
 
 <!-- Processing status filter -->
@@ -164,6 +175,48 @@ function parseTags(str) {
     return str ? str.split(',').map(t => t.trim()).filter(Boolean) : [];
 }
 
+function parseTagRenames(str) {
+    const renames = [];
+    const lines = str.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+
+    for (const line of lines) {
+        const match = line.match(/^(.*?)\s*(?:=>|->)\s*(.*?)$/);
+        if (!match) {
+            throw new Error(`Invalid rename: "${line}". Use "old => new".`);
+        }
+        const fromTag = match[1].trim();
+        const toTag = match[2].trim();
+        if (!fromTag || !toTag) {
+            throw new Error(`Invalid rename: "${line}". Use "old => new".`);
+        }
+        if (fromTag !== toTag) {
+            renames.push({from_tag: fromTag, to_tag: toTag});
+        }
+    }
+
+    if (!renames.length) {
+        throw new Error('Enter at least one tag rename.');
+    }
+
+    return renames;
+}
+
+function remapActiveTag(renames) {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('tag')) return false;
+
+    const currentTag = url.searchParams.get('tag');
+    let nextTag = currentTag;
+    renames.forEach(({from_tag, to_tag}) => {
+        if (nextTag === from_tag) nextTag = to_tag;
+    });
+
+    if (nextTag === currentTag) return false;
+    url.searchParams.set('tag', nextTag);
+    window.location.href = url.toString();
+    return true;
+}
+
 document.getElementById('add-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -220,6 +273,51 @@ document.getElementById('import-form')?.addEventListener('submit', async (e) => 
             const paperId = data.paper_id;
             status.innerHTML = `<p>Imported: <a href="/paper/${paperId}">${data.title}</a></p>`;
             setTimeout(() => location.reload(), 1000);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+        form.querySelector('button[type="submit"]').disabled = false;
+    }
+});
+
+document.getElementById('rename-tags-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const input = document.getElementById('rename-tags-input');
+    const status = document.getElementById('rename-tags-status');
+    let renames;
+
+    try {
+        renames = parseTagRenames(input.value);
+    } catch (err) {
+        status.innerHTML = `<p class="error">${err.message}</p>`;
+        return;
+    }
+
+    status.innerHTML = '<p aria-busy="true">Applying tag changes across all papers...</p>';
+    form.querySelector('button[type="submit"]').disabled = true;
+
+    try {
+        const resp = await fetch('/api/tags/rename', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({renames}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            status.innerHTML = `<p class="error">${data.error || 'Server error'}</p>`;
+            return;
+        }
+
+        const summary = data.renames
+            .map(rename => `${rename.from_tag} -> ${rename.to_tag} (${rename.updated_papers})`)
+            .join(', ');
+        status.innerHTML = `<p>Updated ${data.papers_updated} paper(s). ${summary}</p>`;
+        input.value = '';
+
+        if (!remapActiveTag(data.renames)) {
+            setTimeout(() => location.reload(), 800);
         }
     } catch (err) {
         status.innerHTML = `<p class="error">Error: ${err.message}</p>`;

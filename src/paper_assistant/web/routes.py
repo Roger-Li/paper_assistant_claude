@@ -22,6 +22,15 @@ class TagsRequest(BaseModel):
     tags: list[str]
 
 
+class TagRenameRequest(BaseModel):
+    from_tag: str
+    to_tag: str
+
+
+class BulkTagRenameRequest(BaseModel):
+    renames: list[TagRenameRequest]
+
+
 class UpdateSummaryRequest(BaseModel):
     markdown: str
     regenerate_audio: bool = True
@@ -40,6 +49,9 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     """Create the router with all web UI endpoints."""
     router = APIRouter()
     storage = StorageManager(config)
+
+    def list_all_tags() -> list[str]:
+        return sorted({tag for paper in storage.list_papers() for tag in paper.tags})
 
     @router.get("/", response_class=HTMLResponse)
     async def index(
@@ -77,15 +89,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             tag=tag, status=status_enum, reading_status=reading_status_enum,
             sort_by=sort, reverse=reverse,
         )
-        all_tags = sorted(
-            {t for p in storage.list_papers() for t in p.tags}
-        )
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
                 "papers": papers,
-                "all_tags": all_tags,
+                "all_tags": list_all_tags(),
                 "active_tag": tag,
                 "total": len(papers),
                 "active_sort": sort,
@@ -404,6 +413,21 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"status": "ok", "tags": tags}
         except KeyError:
             return {"error": f"Paper {paper_id} not found"}
+
+    @router.put("/api/tags/rename")
+    async def api_rename_tags(req: BulkTagRenameRequest):
+        """Rename tags across all local papers."""
+        report = storage.rename_tags(
+            [(rename.from_tag, rename.to_tag) for rename in req.renames]
+        )
+        if not report["renames"]:
+            return {"error": "No valid tag rename operations provided"}
+
+        return {
+            "status": "ok",
+            **report,
+            "all_tags": list_all_tags(),
+        }
 
     @router.delete("/api/paper/{paper_id:path}")
     async def api_delete_paper(paper_id: str):

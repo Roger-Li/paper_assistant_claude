@@ -163,6 +163,56 @@ class TestStorageManager:
         with pytest.raises(KeyError):
             storage.remove_tag("9999.99999", "tag")
 
+    def test_rename_tags_updates_all_matching_papers(self, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            tags=["post-training", "vision"],
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            tags=["Reranking"],
+        )
+        p3 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00003", title="C"),
+            tags=["analysis"],
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        storage.add_paper(p3)
+
+        untouched_before = storage.get_paper("2501.00003").local_modified_at
+        fixed_time = datetime(2025, 3, 15, tzinfo=timezone.utc)
+        report = storage.rename_tags(
+            [
+                ("post-training", "Post-training"),
+                ("Reranking", "Re-ranker"),
+            ],
+            modified_at=fixed_time,
+        )
+
+        assert report["papers_updated"] == 2
+        assert report["renames"][0]["updated_papers"] == 1
+        assert report["renames"][1]["updated_papers"] == 1
+        assert storage.get_paper("2501.00001").tags == ["Post-training", "vision"]
+        assert storage.get_paper("2501.00002").tags == ["Re-ranker"]
+        assert storage.get_paper("2501.00001").local_modified_at == fixed_time
+        assert storage.get_paper("2501.00002").local_modified_at == fixed_time
+        assert storage.get_paper("2501.00003").local_modified_at == untouched_before
+
+    def test_rename_tags_merges_existing_target_and_preserves_filtering(self, storage):
+        paper = Paper(
+            metadata=_make_metadata(),
+            tags=["Post-training", "post-training", "analysis"],
+        )
+        storage.add_paper(paper)
+
+        report = storage.rename_tags([("post-training", "Post-training")])
+
+        assert report["papers_updated"] == 1
+        assert storage.get_paper("2503.10291").tags == ["Post-training", "analysis"]
+        assert len(storage.list_papers(tag="Post-training")) == 1
+        assert storage.list_papers(tag="post-training") == []
+
     def test_save_summary(self, storage, sample_paper):
         storage.add_paper(sample_paper)
         path = storage.save_summary("2503.10291", "# Summary\nContent here")

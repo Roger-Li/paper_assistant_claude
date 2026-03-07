@@ -142,6 +142,7 @@ JSON:
 - `POST /api/import` (auto-detects arXiv URLs vs web article URLs)
 - `POST /api/paper/{paper_id}/tags`
 - `DELETE /api/paper/{paper_id}/tags/{tag}`
+- `PUT /api/tags/rename`
 - `DELETE /api/paper/{paper_id}`
 - `GET /api/paper/{paper_id}/summary`
 - `PUT /api/paper/{paper_id}/summary`

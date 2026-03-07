@@ -72,6 +72,7 @@ class TestIndexPage:
         assert resp.status_code == 200
         assert "2503.10291" in resp.text
         assert "VisualPRM" in resp.text
+        assert "Bulk edit tags" in resp.text
 
     def test_tag_filter(self, client, storage):
         p1 = Paper(
@@ -220,6 +221,72 @@ class TestApiTags:
 
     def test_remove_tag_nonexistent_paper(self, client):
         resp = client.delete("/api/paper/9999.99999/tags/test")
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+    def test_bulk_rename_tags(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            tags=["post-training"],
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            tags=["Post-training", "post-training", "Reranking"],
+        )
+        p3 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00003", title="C"),
+            tags=["analysis"],
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+        storage.add_paper(p3)
+
+        resp = client.put(
+            "/api/tags/rename",
+            json={
+                "renames": [
+                    {"from_tag": "post-training", "to_tag": "Post-training"},
+                    {"from_tag": "Reranking", "to_tag": "Re-ranker"},
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["papers_updated"] == 2
+        assert storage.get_paper("2501.00001").tags == ["Post-training"]
+        assert storage.get_paper("2501.00002").tags == ["Post-training", "Re-ranker"]
+        assert "Post-training" in data["all_tags"]
+        assert "post-training" not in data["all_tags"]
+
+    def test_bulk_rename_tags_preserves_filtering(self, client, storage):
+        p1 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00001", title="A"),
+            tags=["Reranking"],
+        )
+        p2 = Paper(
+            metadata=_make_metadata(arxiv_id="2501.00002", title="B"),
+            tags=["Re-ranker"],
+        )
+        storage.add_paper(p1)
+        storage.add_paper(p2)
+
+        resp = client.put(
+            "/api/tags/rename",
+            json={"renames": [{"from_tag": "Reranking", "to_tag": "Re-ranker"}]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert len(client.get("/api/papers?tag=Re-ranker").json()) == 2
+        assert client.get("/api/papers?tag=Reranking").json() == []
+
+    def test_bulk_rename_tags_requires_valid_changes(self, client):
+        resp = client.put(
+            "/api/tags/rename",
+            json={"renames": [{"from_tag": "same", "to_tag": "same"}]},
+        )
         assert resp.status_code == 200
         assert "error" in resp.json()
 
