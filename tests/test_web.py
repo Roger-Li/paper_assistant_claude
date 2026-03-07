@@ -126,6 +126,30 @@ class TestPaperDetailPage:
         resp = client.get("/paper/2503.10291")
         assert resp.status_code == 200
         assert "Test content" in resp.text
+        assert "Reader mode" in resp.text
+        assert "Press K or Space to pause or resume, and Escape to stop." in resp.text
+        assert "Tables, equations, and code stay visible but are not read aloud." in resp.text
+        assert "/static/reader_mode.js" in resp.text
+        assert "PaperReaderMode?.init" in resp.text
+
+    def test_without_summary_hides_reader_mode(self, client, paper_in_index):
+        resp = client.get("/paper/2503.10291")
+        assert resp.status_code == 200
+        assert "Reader mode" not in resp.text
+        assert "/static/reader_mode.js" not in resp.text
+
+    def test_audio_player_still_renders(self, client, storage):
+        paper = Paper(
+            metadata=_make_metadata(),
+            status=ProcessingStatus.COMPLETE,
+            audio_path="audio/2503.10291.mp3",
+        )
+        storage.add_paper(paper)
+
+        resp = client.get("/paper/2503.10291")
+        assert resp.status_code == 200
+        assert "Audio Summary" in resp.text
+        assert "/audio/2503.10291.mp3" in resp.text
 
 
 class TestApiListPapers:

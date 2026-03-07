@@ -21,6 +21,7 @@ Platform notes:
 - Clipboard import without `--file` uses `pbpaste` (macOS command).
 - On Linux, use `paper-assist import ... --file summary.md`.
 - iCloud audio sync is macOS-specific unless you override `PAPER_ASSIST_ICLOUD_DIR`.
+- Browser Reader Mode on the paper detail page is a client-side Web Speech feature, optimized for desktop Brave/Chromium, and it prefers default/local natural voices exposed by the browser. In Reader Mode, technical blocks stay visible, but only prose is read aloud. Use `K` or `Space` to pause/resume and `Escape` to stop.
 
 ## Quick Start (pip + venv)
 
@@ -178,6 +179,7 @@ Features:
 - **Sorting**: click "Sort by" links on the papers list to sort by date added, title, tag, or arXiv ID
 - **Filtering**: filter papers by processing status, reading status, or tag
 - **Reading status**: mark papers as unread/read/archived directly from the list page via inline dropdown
+- **Reader Mode**: on a paper detail page, use browser-native "read from here" playback with sentence highlighting while keeping technical blocks visible; use `K` or `Space` to pause/resume and `Escape` to stop (separate from generated MP3 audio)
 - **Edit summary**: on a paper detail page, click "Edit Summary" to modify the markdown and optionally regenerate audio
 - **Notion sync**: run manual sync (preview/apply) from the list page
 

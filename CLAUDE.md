@@ -35,6 +35,11 @@ src/paper_assistant/
     └── static/     # CSS and JS assets
 ```
 
+## Design Docs
+
+- `docs/design-web-article-support.md` — original design and migration plan for non-arXiv web article support
+- `docs/design-browser-reader-mode.md` — current Browser Reader Mode architecture, constraints, playback model, and QA expectations
+
 ## Operational Model
 
 ### Data source of truth
@@ -83,6 +88,17 @@ Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
 
 5. TTS speaks full markdown summary content.
    - Audio generation uses full markdown, not only one-pager section.
+
+5b. Browser Reader Mode is separate from generated audio.
+   - The paper detail page may offer browser-native read-aloud with sentence highlighting.
+   - Prefer browser default/local non-novelty voices when choosing defaults.
+   - Prefer chunked utterances with sentence highlighting driven by boundary events when available, instead of one utterance per sentence.
+   - Reader Mode should preserve rendered technical content visually when feasible, but speech should stay scoped to prose blocks rather than reading tables, equations, or code verbatim.
+   - Reader Mode keyboard controls are part of the user-facing contract: `K` or `Space` pauses/resumes and `Escape` stops.
+   - Sentence fragments may be focusable/clickable; global playback shortcuts should still work while those fragments have focus and should only defer to real typing targets.
+   - When changing this feature, keep `docs/design-browser-reader-mode.md` aligned with the current implementation and limitations.
+   - This is client-side only and must not require `index.json`, storage, or API changes unless explicitly requested.
+   - `tts.py` and generated MP3 files remain the source for saved audio/podcast behavior.
 
 6. FastAPI request models must remain at module level.
    - With `from __future__ import annotations`, nested request-body models can break type-hint resolution.
@@ -177,6 +193,8 @@ Favor targeted additions in:
 - `tests/test_web_*.py` for route contracts
 - `tests/test_cli_*.py` if command behavior changes
 - `tests/test_notion.py` for sync conflict/merge rules
+
+For browser Reader Mode changes, keep automated coverage at the HTML contract level and do manual desktop Brave/Chromium QA for speech events, sentence progression, highlight behavior, and keyboard shortcuts.
 
 ## Definition of Done (Required)
 

@@ -76,14 +76,47 @@
 
 <hr>
 
-<!-- Summary content rendered with markdown + math -->
-<article id="summary-content">
+<div id="summary-view">
     {% if summary %}
-    <p aria-busy="true">Rendering summary...</p>
-    {% else %}
-    <p><em>No summary available yet.</em></p>
+    <section id="reader-mode" class="reader-mode" data-paper-id="{{ paper.metadata.paper_id }}">
+        <div class="reader-mode-toolbar">
+            <label class="reader-mode-toggle" for="reader-mode-enabled">
+                <input type="checkbox" id="reader-mode-enabled">
+                Reader mode
+            </label>
+            <button id="reader-play-top" type="button" class="outline reader-control">Play from top</button>
+            <button id="reader-pause" type="button" class="secondary outline reader-control" title="Pause or resume reading (K or Space)">Pause</button>
+            <button id="reader-stop" type="button" class="secondary outline reader-control" title="Stop reading (Escape)">Stop</button>
+            <label class="reader-field" for="reader-voice">
+                <span>Voice</span>
+                <select id="reader-voice"></select>
+            </label>
+            <label class="reader-field" for="reader-rate">
+                <span>Rate</span>
+                <select id="reader-rate">
+                    <option value="0.9">0.9x</option>
+                    <option value="0.95">0.95x</option>
+                    <option value="1" selected>1.0x</option>
+                    <option value="1.05">1.05x</option>
+                    <option value="1.1">1.1x</option>
+                    <option value="1.2">1.2x</option>
+                </select>
+            </label>
+        </div>
+        <p id="reader-status" class="reader-status">Click any sentence to read from here. Press K or Space to pause or resume, and Escape to stop. Tables, equations, and code stay visible but are not read aloud.</p>
+        <div id="reader-mode-content" class="reader-mode-content" hidden></div>
+    </section>
     {% endif %}
-</article>
+
+    <!-- Summary content rendered with markdown + math -->
+    <article id="summary-content">
+        {% if summary %}
+        <p aria-busy="true">Rendering summary...</p>
+        {% else %}
+        <p><em>No summary available yet.</em></p>
+        {% endif %}
+    </article>
+</div>
 
 <p><a href="/">&larr; Back to all papers</a></p>
 
@@ -99,6 +132,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="/static/reader_mode.js"></script>
 <script>
 (function() {
     // Raw markdown passed from Jinja (JSON-escaped to avoid HTML issues)
@@ -133,6 +167,11 @@
             {left: '\\[', right: '\\]', display: true},
         ],
         throwOnError: false,
+    });
+
+    window.PaperReaderMode?.init({
+        rootId: 'reader-mode',
+        summaryId: 'summary-content',
     });
 })();
 </script>
@@ -184,10 +223,11 @@ let editMode = false;
 
 async function toggleEdit() {
     const panel = document.getElementById('edit-panel');
-    const content = document.getElementById('summary-content');
+    const summaryView = document.getElementById('summary-view');
     const editBtn = document.getElementById('edit-btn');
 
     if (!editMode) {
+        window.PaperReaderMode?.stop();
         const resp = await fetch(`/api/paper/${paperId}/summary`);
         const data = await resp.json();
         if (data.error && !data.markdown) {
@@ -196,11 +236,11 @@ async function toggleEdit() {
         }
         document.getElementById('edit-markdown').value = data.markdown || '';
         panel.style.display = 'block';
-        content.style.display = 'none';
+        summaryView.style.display = 'none';
         editBtn.textContent = 'Cancel Edit';
     } else {
         panel.style.display = 'none';
-        content.style.display = 'block';
+        summaryView.style.display = 'block';
         editBtn.textContent = 'Edit Summary';
         document.getElementById('edit-status').innerHTML = '';
     }
