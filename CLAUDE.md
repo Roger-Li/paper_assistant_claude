@@ -39,6 +39,7 @@ src/paper_assistant/
 
 - `docs/design-web-article-support.md` — original design and migration plan for non-arXiv web article support
 - `docs/design-browser-reader-mode.md` — current Browser Reader Mode architecture, constraints, playback model, and QA expectations
+- `docs/design-workflow-optimization.md` — workflow optimization roadmap: MCP servers, Claude Code slash commands, synthesis prompts, `SourceType.NOTE`
 
 ## Operational Model
 
@@ -221,6 +222,11 @@ A task is complete only when all are true:
 8. Refactor: Extract shared pipeline logic from `cli.py` and `web/routes.py` into a `pipeline.py` module. Both files duplicate add/import workflows 4× (add/import × arxiv/web). (~400 lines of duplication.)
 9. Refactor: Split `NotionClient` in `notion.py` (470 LOC) — extract property mapping, block fetching, and page building into focused helpers.
 10. Refactor: Break `_ast_node_to_blocks` (143 LOC) into per-block-type sub-functions for tables, lists, and code blocks.
+11. Workflow optimization: `--sync-notion` flag on `add`/`import` commands + web API. (See `docs/design-workflow-optimization.md` R1, R6)
+12. `SourceType.NOTE` + `paper-assist create` command + synthesis prompt templates (lit review, comparison, study guide) for URL-less multi-paper entries. Prompts drafted as TODO for user finalization. (See R2)
+13. Claude Code slash commands: `/summarize` (single-paper, reuses existing `prompt.py` templates), `/import-summary`, `/lit-review`, `/compare` (multi-paper, uses new synthesis prompts). (See R4, R5)
+14. Academic paper search MCP server integration — optional, for paper discovery in lit reviews. (See R3)
+15. Evaluate community research skills for adoption/inspiration. (See R7)
 
 ## Non-Goals (Current)
 
