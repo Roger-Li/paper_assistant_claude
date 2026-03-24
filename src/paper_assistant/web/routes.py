@@ -90,9 +90,9 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             sort_by=sort, reverse=reverse,
         )
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "papers": papers,
                 "all_tags": list_all_tags(),
                 "active_tag": tag,
@@ -112,8 +112,9 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         paper = storage.get_paper(paper_id)
         if paper is None:
             return templates.TemplateResponse(
+                request,
                 "paper.html",
-                {"request": request, "paper": None, "summary": "", "paper_id": paper_id},
+                {"paper": None, "summary": "", "paper_id": paper_id},
             )
 
         summary = ""
@@ -123,9 +124,9 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 summary = summary_path.read_text(encoding="utf-8")
 
         return templates.TemplateResponse(
+            request,
             "paper.html",
             {
-                "request": request,
                 "paper": paper,
                 "summary": summary,
                 "paper_id": paper_id,

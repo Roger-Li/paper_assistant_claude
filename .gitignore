@@ -14,6 +14,7 @@ venv/
 
 # Data (user-generated content)
 data/
+.paper-assistant/
 
 # IDE
 .vscode/
