@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+import subprocess
 
 import click
 from rich.console import Console
@@ -274,19 +276,16 @@ async def _generate_audio_step(
     config, storage, paper, result, metadata, paper_id, skip_audio, step_label
 ):
     """Shared audio generation step for both arXiv and web article pipelines."""
-    from paper_assistant.models import ProcessingStatus, SourceType
+    from paper_assistant.models import ProcessingStatus
     from paper_assistant.storage import make_audio_filename
     from paper_assistant.tts import prepare_text_for_tts, text_to_speech
 
     if not skip_audio:
         console.print(f"[bold]Step {step_label}:[/bold] Generating audio...")
         try:
-            source_label = (
-                "article" if metadata.source_type == SourceType.WEB else "paper"
-            )
             tts_text = prepare_text_for_tts(
                 result.full_markdown, metadata.title, metadata.authors,
-                source_label=source_label,
+                source_label=metadata.source_label,
             )
             audio_path = config.audio_dir / make_audio_filename(paper_id)
             await text_to_speech(tts_text, audio_path, config.tts_voice, config.tts_rate)
@@ -329,6 +328,15 @@ def _copy_to_icloud(config, paper, title, paper_id):
         console.print(f"[yellow]Warning: iCloud copy failed:[/yellow] {e}")
 
 
+def _read_markdown_input(file_path: str | None) -> str:
+    """Read markdown from a file or the macOS clipboard."""
+    if file_path:
+        return Path(file_path).read_text(encoding="utf-8")
+
+    result = subprocess.run(["pbpaste"], capture_output=True, text=True)
+    return result.stdout
+
+
 @main.command("import")
 @click.argument("url")
 @click.option("--file", "-f", "file_path", type=click.Path(exists=True), help="Read markdown from file instead of clipboard.")
@@ -353,15 +361,7 @@ def import_paper(
       paper-assist import https://arxiv.org/abs/2503.10291
       paper-assist import https://example.com/blog/article --file summary.md
     """
-    import subprocess
-
-    if file_path:
-        from pathlib import Path
-
-        markdown = Path(file_path).read_text(encoding="utf-8")
-    else:
-        result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-        markdown = result.stdout
+    markdown = _read_markdown_input(file_path)
 
     if not markdown.strip():
         console.print("[red]No markdown content found.[/red]")
@@ -567,6 +567,96 @@ async def _import_web_article(
     console.print(f"  Summary: {summary_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
+
+
+@main.command("create")
+@click.option("--title", required=True, help="Title for the local note entry.")
+@click.option("--source-url", help="Optional canonical or bookmark URL for this note.")
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    type=click.Path(exists=True),
+    help="Read markdown from file instead of clipboard.",
+)
+@click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option("--tags", "-t", multiple=True, help="Tags to apply to this note.")
+@click.pass_context
+def create_note(
+    ctx: click.Context,
+    title: str,
+    source_url: str | None,
+    file_path: str | None,
+    skip_audio: bool,
+    tags: tuple[str, ...],
+) -> None:
+    """Create a local markdown-backed note entry from clipboard or file."""
+    markdown = _read_markdown_input(file_path)
+
+    if not markdown.strip():
+        console.print("[red]No markdown content found.[/red]")
+        if not file_path:
+            console.print("Copy your note markdown to the clipboard first, or use --file.")
+        return
+
+    asyncio.run(
+        _create_note(
+            ctx.obj,
+            title=title,
+            source_url=source_url,
+            markdown=markdown,
+            skip_audio=skip_audio,
+            tags=list(tags),
+        )
+    )
+
+
+async def _create_note(
+    obj: dict,
+    *,
+    title: str,
+    source_url: str | None,
+    markdown: str,
+    skip_audio: bool,
+    tags: list[str],
+) -> None:
+    from paper_assistant.config import load_config
+    from paper_assistant.pipeline import create_local_entry
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**obj)
+    config.ensure_dirs()
+    storage = StorageManager(config)
+
+    console.print("[bold]Creating local note entry...[/bold]")
+    try:
+        outcome = await create_local_entry(
+            config=config,
+            storage=storage,
+            title=title,
+            markdown=markdown,
+            source_url=source_url,
+            tags=tags,
+            skip_audio=skip_audio,
+        )
+    except Exception as e:
+        console.print(f"[red]Error creating local note:[/red] {e}")
+        return
+
+    paper = outcome.paper
+    paper_id = paper.metadata.paper_id
+
+    if paper.audio_path and config.icloud_sync:
+        _copy_to_icloud(config, paper, paper.metadata.title, paper_id)
+
+    console.print()
+    console.print("[green]Done![/green] Local note created successfully.")
+    console.print(f"  ID:      {paper_id}")
+    console.print(f"  Summary: {outcome.summary_path}")
+    if paper.audio_path:
+        console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
+    for warning in outcome.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
 
 
 @main.command("list")

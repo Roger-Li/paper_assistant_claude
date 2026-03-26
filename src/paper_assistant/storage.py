@@ -12,17 +12,23 @@ from paper_assistant.models import (
     PaperIndex,
     ProcessingStatus,
     ReadingStatus,
+    SourceType,
     sanitize_filename,
 )
 
 
-def make_summary_filename(paper_id: str, title: str) -> str:
+def make_summary_filename(
+    paper_id: str,
+    title: str,
+    source_type: SourceType = SourceType.ARXIV,
+) -> str:
     """Generate the standard summary filename.
 
     Example: [Paper][2503.10291] VisualPRM - An Effective Process Reward Model.md
     """
     safe = sanitize_filename(title)
-    return f"[Paper][{paper_id}] {safe}.md"
+    prefix = "Note" if source_type == SourceType.NOTE else "Paper"
+    return f"[{prefix}][{paper_id}] {safe}.md"
 
 
 def make_audio_filename(paper_id: str) -> str:
@@ -136,6 +142,17 @@ class StorageManager:
         """Check if a paper already exists in the index."""
         index = self.load_index()
         return paper_id in index.papers
+
+    def make_unique_slug(self, base_slug: str) -> str:
+        """Return a slug that does not collide with an existing paper_id."""
+        index = self.load_index()
+        if base_slug not in index.papers:
+            return base_slug
+
+        suffix = 2
+        while f"{base_slug}-{suffix}" in index.papers:
+            suffix += 1
+        return f"{base_slug}-{suffix}"
 
     def add_tags(
         self,
@@ -263,7 +280,11 @@ class StorageManager:
         if paper is None:
             raise KeyError(f"Paper {paper_id} not in index")
 
-        filename = make_summary_filename(paper_id, paper.metadata.title)
+        filename = make_summary_filename(
+            paper_id,
+            paper.metadata.title,
+            paper.metadata.source_type,
+        )
         full_path = self.config.papers_dir / filename
         full_path.write_text(content, encoding="utf-8")
 

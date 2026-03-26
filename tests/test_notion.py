@@ -45,6 +45,16 @@ def _make_web_metadata(slug: str = "example-com-blog-test", title: str = "Test A
     )
 
 
+def _make_note_metadata(slug: str = "local-reading-note", title: str = "Local Note") -> PaperMetadata:
+    return PaperMetadata(
+        source_type=SourceType.NOTE,
+        source_slug=slug,
+        source_url="https://example.com/reference",
+        title=title,
+        authors=[],
+    )
+
+
 def _make_config(tmp_path: Path) -> Config:
     cfg = Config(
         anthropic_api_key="test-key",
@@ -59,13 +69,34 @@ def _make_config(tmp_path: Path) -> Config:
 
 
 class FakeNotionClient:
-    def __init__(self, remote_papers: list[NotionPaper]):
+    def __init__(
+        self,
+        remote_papers: list[NotionPaper],
+        *,
+        property_keys: dict[str, str] | None = None,
+    ):
         self.remote_papers = remote_papers
         self.created_calls: list[str] = []
         self.updated_calls: list[str] = []
         self.archived_calls: list[str] = []
         self.audio_calls: list[str] = []
         self.fail_audio_upload = False
+        self._property_keys = property_keys or {
+            "arxiv_id": "arxiv_id",
+            "title": "title",
+            "authors": "authors",
+            "tags": "tags",
+            "reading_status": "reading_status",
+            "summary_last_modified": "summary_last_modified",
+            "local_last_modified": "local_last_modified",
+            "archived": "archived",
+            "source_slug": "source_slug",
+            "source_type": "source_type",
+            "source_url": "source_url",
+        }
+
+    async def _ensure_property_keys(self) -> dict[str, str]:
+        return self._property_keys
 
     async def list_papers(self) -> list[NotionPaper]:
         return list(self.remote_papers)
@@ -77,6 +108,8 @@ class FakeNotionClient:
             page_id=f"page-{pid}",
             arxiv_id=paper.metadata.arxiv_id,
             source_slug=paper.metadata.source_slug,
+            source_type=paper.metadata.source_type.value,
+            source_url=paper.metadata.source_url,
             title=paper.metadata.title,
             authors=paper.metadata.authors,
             tags=paper.tags,
@@ -105,6 +138,8 @@ class FakeNotionClient:
             page_id=page_id,
             arxiv_id=paper.metadata.arxiv_id,
             source_slug=paper.metadata.source_slug,
+            source_type=paper.metadata.source_type.value,
+            source_url=paper.metadata.source_url,
             title=paper.metadata.title,
             authors=paper.metadata.authors,
             tags=paper.tags,
@@ -172,6 +207,8 @@ async def test_sync_remote_newer_pulls_summary_tags_status(tmp_path):
         page_id="page-1",
         arxiv_id="2503.10291",
         source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=["remote-tag"],
@@ -216,6 +253,8 @@ async def test_sync_local_newer_pushes_update(tmp_path):
         page_id="page-1",
         arxiv_id="2503.10291",
         source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=["remote"],
@@ -243,6 +282,8 @@ async def test_sync_imports_notion_only_record(tmp_path):
         page_id="page-new",
         arxiv_id="2502.00001",
         source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
         title="Remote Paper",
         authors=["Remote Author"],
         tags=["remote"],
@@ -283,6 +324,8 @@ async def test_sync_archive_propagates_from_notion(tmp_path):
         page_id="page-arch",
         arxiv_id="2503.10291",
         source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
         title="Sample Paper",
         authors=["Alice", "Bob"],
         tags=[],
@@ -343,6 +386,21 @@ async def test_sync_web_article_creates_notion_record(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sync_note_creates_notion_record_with_source_metadata(tmp_path):
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+    paper = Paper(metadata=_make_note_metadata())
+    _save_summary(storage, paper, "# One-Pager\nNote summary")
+
+    fake_client = FakeNotionClient(remote_papers=[])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.notion_created == 1
+    assert fake_client.remote_papers[0].source_type == SourceType.NOTE.value
+    assert fake_client.remote_papers[0].source_url == "https://example.com/reference"
+
+
+@pytest.mark.asyncio
 async def test_sync_imports_notion_web_article(tmp_path):
     """Notion pages with source_slug but no arxiv_id should import as web articles."""
     config = _make_config(tmp_path)
@@ -352,6 +410,8 @@ async def test_sync_imports_notion_web_article(tmp_path):
         page_id="page-web",
         arxiv_id=None,
         source_slug="remote-blog-slug",
+        source_type=None,
+        source_url="https://example.com/blog/test",
         title="Remote Blog Post",
         authors=["Blog Author"],
         tags=["blog"],
@@ -375,6 +435,71 @@ async def test_sync_imports_notion_web_article(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sync_imports_notion_note(tmp_path):
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+
+    remote = NotionPaper(
+        page_id="page-note",
+        arxiv_id=None,
+        source_slug="remote-note",
+        source_type=SourceType.NOTE.value,
+        source_url="https://example.com/reference",
+        title="Remote Note",
+        authors=[],
+        tags=["reading-list"],
+        reading_status="unread",
+        summary_markdown="# One-Pager\nRemote note body",
+        summary_last_modified=datetime.now(timezone.utc),
+        local_last_modified=None,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    fake_client = FakeNotionClient(remote_papers=[remote])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.local_created == 1
+    imported = storage.get_paper("remote-note")
+    assert imported is not None
+    assert imported.metadata.source_type == SourceType.NOTE
+    assert imported.metadata.source_url == "https://example.com/reference"
+
+
+@pytest.mark.asyncio
+async def test_sync_warns_when_note_source_type_property_is_missing(tmp_path):
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+    paper = Paper(metadata=_make_note_metadata())
+    _save_summary(storage, paper, "# One-Pager\nNote summary")
+
+    fake_client = FakeNotionClient(
+        remote_papers=[],
+        property_keys={
+            "arxiv_id": "arxiv_id",
+            "title": "title",
+            "authors": "authors",
+            "tags": "tags",
+            "reading_status": "reading_status",
+            "summary_last_modified": "summary_last_modified",
+            "local_last_modified": "local_last_modified",
+            "archived": "archived",
+            "source_slug": "source_slug",
+            "source_url": "source_url",
+        },
+    )
+    report = await sync_notion(
+        config=config,
+        storage=storage,
+        notion_client=fake_client,
+        dry_run=True,
+    )
+
+    assert report.notion_created == 1
+    assert any("source_type" in warning for warning in report.warnings)
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_notion_page_without_id(tmp_path):
     """Pages with neither arxiv_id nor source_slug should be skipped."""
     config = _make_config(tmp_path)
@@ -384,6 +509,8 @@ async def test_sync_skips_notion_page_without_id(tmp_path):
         page_id="page-orphan",
         arxiv_id=None,
         source_slug=None,
+        source_type=None,
+        source_url=None,
         title="Orphan Page",
         authors=[],
         tags=[],
@@ -419,6 +546,8 @@ class TestRemoteModifiedAt:
             page_id="page-1",
             arxiv_id="2601.19897",
             source_slug=None,
+            source_type=SourceType.ARXIV.value,
+            source_url=None,
             title="Test",
             authors=["Author"],
             tags=[],

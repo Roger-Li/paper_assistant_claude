@@ -4,7 +4,7 @@ AI-powered ML research paper summarizer with podcast generation and Notion sync.
 
 ## Overview
 
-Paper Assistant takes an arXiv URL or any web article URL, fetches metadata and content, generates a structured markdown summary with Claude, optionally creates narrated audio, and maintains a local podcast feed.
+Paper Assistant takes an arXiv URL, any web article URL, or a local markdown-backed note, generates or stores a structured markdown summary, optionally creates narrated audio, and maintains a local podcast feed.
 
 It can also sync papers to a Notion database (manual two-way sync for summary/tags/reading status) so pages are easy to share and listen to across devices.
 
@@ -80,14 +80,14 @@ Default path: `~/.paper-assistant/`
 
 ```text
 ~/.paper-assistant/
-├── papers/     # [Paper][{paper_id}] {title}.md
+├── papers/     # [Paper][{paper_id}] {title}.md / [Note][{paper_id}] {title}.md
 ├── audio/      # {paper_id}.mp3
 ├── pdfs/       # {arxiv_id}.pdf (arXiv papers only)
 ├── index.json  # Source of truth for paper metadata/state
 └── feed.xml    # RSS feed
 ```
 
-For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web articles, it is a URL-derived slug (e.g., `thinkingmachines-ai-blog-on-policy-distillation`).
+For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web articles, it is a URL-derived slug (e.g., `thinkingmachines-ai-blog-on-policy-distillation`). For local notes, it is a title-derived slug (e.g., `my-reading-note`).
 
 ## CLI Commands
 
@@ -95,6 +95,7 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 |---|---|
 | `paper-assist add <url>` | Full pipeline: fetch -> summarize -> audio -> feed (arXiv or web URL) |
 | `paper-assist import <url>` | Import pre-written markdown summary (arXiv or web URL) |
+| `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark |
 | `paper-assist list` | List papers (`--status`, `--tag`) |
 | `paper-assist show <paper_id>` | Print summary in terminal |
 | `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
@@ -140,13 +141,26 @@ paper-assist show 2503.10291
 paper-assist show thinkingmachines-ai-blog-on-policy-distillation
 ```
 
-### 4. Run web UI on another host/port
+### 4. Create a local markdown note
+
+```bash
+# Read markdown from clipboard on macOS
+paper-assist create --title "Reading Note - Policy Distillation" -t reading-list
+
+# Cross-platform mode with a file and optional bookmark URL
+paper-assist create --title "Alignment Reading Note" \
+  --source-url https://example.com/post \
+  --file note.md \
+  -t notes
+```
+
+### 5. Run web UI on another host/port
 
 ```bash
 paper-assist serve --host 0.0.0.0 --port 8877
 ```
 
-### 5. Notion sync (manual)
+### 6. Notion sync (manual)
 
 ```bash
 # preview sync actions
@@ -175,6 +189,7 @@ Key URLs:
 - Bulk tag rename: `PUT /api/tags/rename`
 - Notion sync preview: `GET /api/notion/sync/preview`
 - Notion sync run: `POST /api/notion/sync`
+- Local note create: `POST /api/create`
 
 Features:
 - **Sorting**: click "Sort by" links on the papers list to sort by date added, title, tag, or arXiv ID
@@ -198,6 +213,17 @@ curl -X POST "http://127.0.0.1:8877/api/import" \
     "url": "https://arxiv.org/abs/2503.10291",
     "markdown": "# One Pager\\n...",
     "tags": ["manual"],
+    "skip_audio": false
+  }'
+
+# Create a local note via API
+curl -X POST "http://127.0.0.1:8877/api/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Local Reading Note",
+    "source_url": "https://example.com/reference",
+    "markdown": "# Notes\n...",
+    "tags": ["reading-list"],
     "skip_audio": false
   }'
 
@@ -234,9 +260,13 @@ Create a Notion database with these properties:
 - `summary_last_modified` (`date`)
 - `local_last_modified` (`date`)
 - `archived` (`checkbox`)
-- `source_slug` (`rich_text`) — **optional**, needed only if you sync web articles to Notion
+- `source_slug` (`rich_text`) — **optional**, needed if you sync web articles or local notes to Notion
+- `source_type` (`select`) — **optional**, values `arxiv`, `web`, `note`; preserves note vs web-article round-trip fidelity
+- `source_url` (`rich_text`) — **optional**, preserves canonical/bookmark URLs for web articles and local notes
 
-The `source_slug` column stores the URL-derived slug for web articles. Existing arXiv papers are unaffected — sync continues to join on `arxiv_id` for those. If you don't add the column, arXiv sync works normally and web articles sync without the slug populated.
+The `source_slug` column stores the URL-derived slug for web articles and the title-derived slug for local notes. Existing arXiv papers are unaffected — sync continues to join on `arxiv_id` for those.
+
+If you skip `source_type`, Notion sync still works, but remote-only note pages will import back as web-style entries because `source_slug` is the only non-arXiv identifier. If you skip `source_url`, sync still works, but bookmark URLs will not round-trip back from Notion.
 
 Set environment variables:
 

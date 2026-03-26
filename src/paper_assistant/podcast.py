@@ -53,7 +53,11 @@ def generate_feed(
         fe.id(paper.metadata.paper_id)
         fe.title(paper.metadata.title)
         fe.description(paper.metadata.abstract[:500])
-        link_url = paper.metadata.source_url or paper.metadata.arxiv_url
+        link_url = (
+            paper.metadata.source_url
+            or paper.metadata.arxiv_url
+            or f"{config.podcast_base_url}/paper/{paper.metadata.paper_id}"
+        )
         if link_url:
             fe.link(href=link_url)
 

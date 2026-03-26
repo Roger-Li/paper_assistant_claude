@@ -7,14 +7,26 @@
 <hgroup>
     <h1>{{ paper.metadata.title }}</h1>
     <p>
+        {% set meta = namespace(has_content=false) %}
         {% if paper.metadata.arxiv_id %}
         <a href="{{ paper.metadata.arxiv_url }}" target="_blank">arXiv:{{ paper.metadata.arxiv_id }}</a>
+        {% set meta.has_content = true %}
         {% elif paper.metadata.source_url %}
         <a href="{{ paper.metadata.source_url }}" target="_blank">{{ paper.metadata.source_url[:60] }}{{ '...' if paper.metadata.source_url|length > 60 else '' }}</a>
+        {% set meta.has_content = true %}
+        {% elif paper.metadata.source_type.value == "note" %}
+        <span>Local note</span>
+        {% set meta.has_content = true %}
         {% endif %}
-        &middot; {{ paper.metadata.authors[:5] | join(', ') }}{% if paper.metadata.authors|length > 5 %}, et al.{% endif %}
+
+        {% if paper.metadata.authors %}
+        {% if meta.has_content %}&middot; {% endif %}
+        {{ paper.metadata.authors[:5] | join(', ') }}{% if paper.metadata.authors|length > 5 %}, et al.{% endif %}
+        {% set meta.has_content = true %}
+        {% endif %}
+
         {% if paper.metadata.published %}
-        &middot; {{ paper.metadata.published.strftime('%Y-%m-%d') }}
+        {% if meta.has_content %}&middot; {% endif %}{{ paper.metadata.published.strftime('%Y-%m-%d') }}
         {% endif %}
     </p>
 </hgroup>
@@ -54,7 +66,7 @@
     {% if paper.summary_path %}
     <button id="edit-btn" class="outline" style="font-size: 0.85rem;" onclick="toggleEdit()">Edit Summary</button>
     {% endif %}
-    <button id="delete-btn" class="secondary outline" style="font-size: 0.85rem;" onclick="deletePaper()">Delete this paper</button>
+    <button id="delete-btn" class="secondary outline" style="font-size: 0.85rem;" onclick="deletePaper()">Delete this entry</button>
 </div>
 
 <!-- Edit panel (hidden by default) -->

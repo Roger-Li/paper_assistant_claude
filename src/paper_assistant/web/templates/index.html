@@ -31,6 +31,23 @@
     <div id="import-status"></div>
 </details>
 
+<!-- Create local note -->
+<details>
+    <summary>Add a local article / note</summary>
+    <form id="create-form">
+        <label for="create-title">Title</label>
+        <input type="text" id="create-title" name="title" placeholder="A note or article title" required>
+        <label for="create-source-url">Source URL (optional)</label>
+        <input type="url" id="create-source-url" name="source_url" placeholder="https://example.com/reference">
+        <label for="create-tags">Tags</label>
+        <input type="text" id="create-tags" name="tags" placeholder="Tags (comma-separated, e.g. reading-list, essay)">
+        <label for="create-markdown">Markdown content</label>
+        <textarea id="create-markdown" name="markdown" rows="14" placeholder="Paste the full markdown content you want to keep here..." required></textarea>
+        <button type="submit">Create Local Note</button>
+    </form>
+    <div id="create-status"></div>
+</details>
+
 <!-- Notion sync controls -->
 <details>
     <summary>Sync with Notion</summary>
@@ -272,6 +289,50 @@ document.getElementById('import-form')?.addEventListener('submit', async (e) => 
         } else {
             const paperId = data.paper_id;
             status.innerHTML = `<p>Imported: <a href="/paper/${paperId}">${data.title}</a></p>`;
+            setTimeout(() => location.reload(), 1000);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+        form.querySelector('button[type="submit"]').disabled = false;
+    }
+});
+
+document.getElementById('create-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const title = document.getElementById('create-title').value.trim();
+    const sourceUrl = document.getElementById('create-source-url').value.trim();
+    const tags = parseTags(document.getElementById('create-tags').value);
+    const markdown = document.getElementById('create-markdown').value;
+    const status = document.getElementById('create-status');
+
+    status.innerHTML = '<p aria-busy="true">Creating local note and generating audio...</p>';
+    form.querySelector('button[type="submit"]').disabled = true;
+
+    try {
+        const resp = await fetch('/api/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                title,
+                source_url: sourceUrl || null,
+                markdown,
+                tags,
+                skip_audio: false,
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            const detail = data.detail ? data.detail.map(d => d.msg).join(', ') : '';
+            const errMsg = data.error || detail || `Server error (${resp.status})`;
+            status.innerHTML = `<p class="error">${errMsg}</p>`;
+        } else {
+            const paperId = data.paper_id;
+            const warnings = Array.isArray(data.warnings) && data.warnings.length
+                ? `<p><strong>Warnings:</strong> ${data.warnings.join(' | ')}</p>`
+                : '';
+            status.innerHTML = `<p>Created: <a href="/paper/${paperId}">${data.title}</a></p>${warnings}`;
             setTimeout(() => location.reload(), 1000);
         }
     } catch (err) {

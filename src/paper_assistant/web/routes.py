@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from paper_assistant.config import Config
 from paper_assistant.storage import StorageManager
@@ -14,7 +14,15 @@ from paper_assistant.storage import StorageManager
 class ImportRequest(BaseModel):
     url: str
     markdown: str
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
+    skip_audio: bool = False
+
+
+class CreateRequest(BaseModel):
+    title: str
+    markdown: str
+    source_url: str | None = None
+    tags: list[str] = Field(default_factory=list)
     skip_audio: bool = False
 
 
@@ -167,7 +175,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             if not skip_audio:
                 tts_text = prepare_text_for_tts(
                     result.full_markdown, metadata.title, metadata.authors,
-                    source_label="article",
+                    source_label=metadata.source_label,
                 )
                 audio_path = config.audio_dir / make_audio_filename(paper_id)
                 await text_to_speech(
@@ -305,7 +313,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             if not req.skip_audio:
                 tts_text = prepare_text_for_tts(
                     req.markdown, metadata.title, metadata.authors,
-                    source_label="article",
+                    source_label=metadata.source_label,
                 )
                 audio_path = config.audio_dir / make_audio_filename(paper_id)
                 await text_to_speech(
@@ -326,6 +334,33 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    @router.post("/api/create")
+    async def api_create_note(req: CreateRequest):
+        """API endpoint to create a local markdown-backed note entry."""
+        from paper_assistant.pipeline import create_local_entry
+
+        try:
+            outcome = await create_local_entry(
+                config=config,
+                storage=storage,
+                title=req.title,
+                markdown=req.markdown,
+                source_url=req.source_url,
+                tags=req.tags,
+                skip_audio=req.skip_audio,
+            )
+        except Exception as e:
+            return {"error": str(e)}
+
+        response = {
+            "status": "ok",
+            "paper_id": outcome.paper.metadata.paper_id,
+            "title": outcome.paper.metadata.title,
+        }
+        if outcome.warnings:
+            response["warnings"] = outcome.warnings
+        return response
 
     async def _api_import_arxiv(req: ImportRequest):
         """Internal: import an arXiv paper with a pre-generated summary."""
@@ -573,7 +608,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.put("/api/paper/{paper_id:path}/summary")
     async def api_update_summary(paper_id: str, req: UpdateSummaryRequest):
         """Update a paper's summary and optionally regenerate audio."""
-        from paper_assistant.models import ProcessingStatus, SourceType
+        from paper_assistant.models import ProcessingStatus
         from paper_assistant.podcast import generate_feed
         from paper_assistant.storage import make_audio_filename
         from paper_assistant.summarizer import (
@@ -608,13 +643,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": f"Failed to save summary: {e}"}
 
         # Optionally regenerate audio (graceful degradation)
-        source_label = "article" if paper.metadata.source_type == SourceType.WEB else "paper"
         audio_warning = None
         if req.regenerate_audio:
             try:
                 tts_text = prepare_text_for_tts(
                     req.markdown, paper.metadata.title, paper.metadata.authors,
-                    source_label=source_label,
+                    source_label=paper.metadata.source_label,
                 )
                 audio_path = config.audio_dir / make_audio_filename(paper_id)
                 await text_to_speech(

@@ -649,11 +649,18 @@ def _parse_reading_status(value: str | None) -> ReadingStatus | None:
         return None
 
 
+def _append_warning_once(report: "SyncReport", warning: str) -> None:
+    if warning not in report.warnings:
+        report.warnings.append(warning)
+
+
 @dataclass
 class NotionPaper:
     page_id: str
     arxiv_id: str | None
     source_slug: str | None
+    source_type: str | None
+    source_url: str | None
     title: str
     authors: list[str]
     tags: list[str]
@@ -803,6 +810,8 @@ class NotionClient:
         # Optional properties that won't raise errors if missing
         optional = {
             "source_slug": "rich_text",
+            "source_type": "select",
+            "source_url": "rich_text",
         }
 
         resolved: dict[str, str] = {}
@@ -929,6 +938,8 @@ class NotionClient:
             page_id=page["id"],
             arxiv_id=prop_text("arxiv_id") or None,
             source_slug=prop_text("source_slug") or None,
+            source_type=prop_select("source_type"),
+            source_url=prop_text("source_url") or None,
             title=prop_text("title"),
             authors=[a.strip() for a in prop_text("authors").split(",") if a.strip()],
             tags=_dedupe_tags(prop_tags("tags")),
@@ -987,6 +998,8 @@ class NotionClient:
         local_modified_at: datetime,
         archived: bool,
         source_slug: str | None = None,
+        source_type: SourceType | None = None,
+        source_url: str | None = None,
     ) -> dict[str, Any]:
         arxiv_id_key = self._property_key("arxiv_id")
         title_key = self._property_key("title")
@@ -1012,6 +1025,12 @@ class NotionClient:
         if source_slug and "source_slug" in (self._property_keys or {}):
             slug_key = self._property_key("source_slug")
             props[slug_key] = {"rich_text": _to_rich_text(source_slug)}
+        if source_type and "source_type" in (self._property_keys or {}):
+            source_type_key = self._property_key("source_type")
+            props[source_type_key] = {"select": {"name": source_type.value}}
+        if source_url and "source_url" in (self._property_keys or {}):
+            source_url_key = self._property_key("source_url")
+            props[source_url_key] = {"rich_text": _to_rich_text(source_url)}
 
         return props
 
@@ -1037,6 +1056,8 @@ class NotionClient:
                 local_modified_at=paper.local_modified_at,
                 archived=paper.archived_at is not None or paper.reading_status == ReadingStatus.ARCHIVED,
                 source_slug=paper.metadata.source_slug,
+                source_type=paper.metadata.source_type,
+                source_url=paper.metadata.source_url,
             ),
             "children": blocks[:100],
         }
@@ -1073,6 +1094,8 @@ class NotionClient:
                 local_modified_at=paper.local_modified_at,
                 archived=archived,
                 source_slug=paper.metadata.source_slug,
+                source_type=paper.metadata.source_type,
+                source_url=paper.metadata.source_url,
             ),
             "archived": archived,
         }
@@ -1205,8 +1228,20 @@ async def _push_local_to_notion(
     summary_modified_at = paper.local_modified_at
     audio_path = (config.data_dir / paper.audio_path) if paper.audio_path else None
     archived = _should_archive(paper)
+    property_keys = await client._ensure_property_keys()
 
     pid = paper.metadata.paper_id
+    if paper.metadata.source_type == SourceType.NOTE and "source_type" not in property_keys:
+        _append_warning_once(
+            report,
+            f"Notion database missing optional 'source_type' property; note '{pid}' may round-trip back as a web article.",
+        )
+    if paper.metadata.source_url and "source_url" not in property_keys:
+        _append_warning_once(
+            report,
+            f"Notion database missing optional 'source_url' property; source URL for '{pid}' will not round-trip from Notion.",
+        )
+
     action = (
         f"push local->{pid} to notion "
         f"({'create' if remote is None else 'update'})"
@@ -1361,10 +1396,18 @@ async def _import_remote_only(
             report.skipped += 1
             return
     else:
-        # Web article — build metadata from what Notion provides
+        # Web article / local note — build metadata from what Notion provides
+        if remote.source_type == SourceType.NOTE.value:
+            source_type = SourceType.NOTE
+        elif remote.source_type == SourceType.WEB.value:
+            source_type = SourceType.WEB
+        else:
+            source_type = SourceType.WEB
+
         metadata = PaperMetadata(
-            source_type=SourceType.WEB,
+            source_type=source_type,
             source_slug=remote.source_slug,
+            source_url=remote.source_url,
             title=remote.title or remote.source_slug or "Untitled",
             authors=remote.authors,
         )

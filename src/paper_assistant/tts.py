@@ -47,7 +47,10 @@ def prepare_text_for_tts(
     else:
         author_str = ", ".join(authors)
 
-    intro = f"This is a summary of the {source_label}: {title}, by {author_str}.\n\n"
+    intro = f"This is a summary of the {source_label}: {title}"
+    if author_str:
+        intro += f", by {author_str}"
+    intro += ".\n\n"
 
     text = markdown
 

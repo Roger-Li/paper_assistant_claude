@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from paper_assistant.arxiv import ArxivRateLimitError
 from paper_assistant.config import Config
-from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
+from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.storage import StorageManager
 from paper_assistant.web.app import create_app
 
@@ -23,6 +23,17 @@ def _make_metadata(**overrides):
         "categories": ["cs.CV"],
         "arxiv_url": "https://arxiv.org/abs/2503.10291",
         "pdf_url": "https://arxiv.org/pdf/2503.10291",
+    }
+    defaults.update(overrides)
+    return PaperMetadata(**defaults)
+
+
+def _make_note_metadata(**overrides):
+    defaults = {
+        "source_type": SourceType.NOTE,
+        "source_slug": "local-reading-note",
+        "title": "Local Reading Note",
+        "authors": [],
     }
     defaults.update(overrides)
     return PaperMetadata(**defaults)
@@ -151,6 +162,20 @@ class TestPaperDetailPage:
         assert resp.status_code == 200
         assert "Audio Summary" in resp.text
         assert "/audio/2503.10291.mp3" in resp.text
+
+    def test_note_without_source_url_or_authors_renders_cleanly(self, client, storage):
+        paper = Paper(
+            metadata=_make_note_metadata(),
+            status=ProcessingStatus.COMPLETE,
+        )
+        storage.add_paper(paper)
+        storage.save_summary("local-reading-note", "# Note\nBody")
+
+        resp = client.get("/paper/local-reading-note")
+        assert resp.status_code == 200
+        assert "Local note" in resp.text
+        assert "Delete this entry" in resp.text
+        assert "None" not in resp.text
 
 
 class TestApiListPapers:
@@ -376,6 +401,53 @@ class TestApiImport:
         data = resp.json()
         assert "error" in data
         assert "rate limit" in data["error"].lower()
+
+
+class TestApiCreate:
+    def test_create_success(self, client, storage):
+        with (
+            patch("paper_assistant.tts.text_to_speech", new_callable=AsyncMock),
+            patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.post(
+                "/api/create",
+                json={
+                    "title": "Reading Note",
+                    "source_url": "https://example.com/reference",
+                    "markdown": "# One-Pager\nBody content",
+                    "tags": ["manual"],
+                },
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["paper_id"] == "reading-note"
+
+        saved = storage.get_paper("reading-note")
+        assert saved is not None
+        assert saved.metadata.source_type == SourceType.NOTE
+        assert saved.metadata.source_url == "https://example.com/reference"
+
+    def test_create_duplicate_title_gets_unique_slug(self, client):
+        with patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"):
+            first = client.post(
+                "/api/create",
+                json={"title": "Reading Note", "markdown": "First", "skip_audio": True},
+            )
+            second = client.post(
+                "/api/create",
+                json={"title": "Reading Note", "markdown": "Second", "skip_audio": True},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["paper_id"] == "reading-note"
+        assert second.json()["paper_id"] == "reading-note-2"
+
+    def test_create_missing_fields(self, client):
+        resp = client.post("/api/create", json={"title": "Only title"})
+        assert resp.status_code == 422
 
 
 class TestApiUpdateSummary:

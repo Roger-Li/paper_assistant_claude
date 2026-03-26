@@ -8,6 +8,7 @@ from paper_assistant.models import (
     PaperMetadata,
     ProcessingStatus,
     ReadingStatus,
+    SourceType,
     sanitize_filename,
 )
 
@@ -59,6 +60,15 @@ class TestPaperMetadata:
         restored = PaperMetadata.model_validate(data)
         assert restored.arxiv_id == "2503.10291"
         assert restored.title == "VisualPRM: An Effective Process Reward Model"
+
+    def test_note_uses_source_slug_as_paper_id(self):
+        meta = PaperMetadata(
+            source_type=SourceType.NOTE,
+            source_slug="local-note",
+            title="Local Note",
+        )
+        assert meta.paper_id == "local-note"
+        assert meta.source_label == "note"
 
 
 class TestPaper:

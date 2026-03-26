@@ -44,6 +44,15 @@ def slugify_url(url: str, max_length: int = 80) -> str:
     return slug
 
 
+def slugify_title(title: str, max_length: int = 80) -> str:
+    """Derive a human-readable, filesystem-safe slug from a title."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-").lower()
+    if len(slug) > max_length:
+        slug = slug[:max_length].rsplit("-", 1)[0].rstrip("-")
+    return slug or "note"
+
+
 async def fetch_article(
     url: str,
     *,

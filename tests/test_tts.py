@@ -17,6 +17,11 @@ class TestPrepareTextForTts:
         text = prepare_text_for_tts("Content", "Title", ["A", "B", "C"])
         assert "A, B, C" in text
 
+    def test_intro_without_authors(self):
+        text = prepare_text_for_tts("Content", "Local Note", [], source_label="note")
+        assert text.startswith("This is a summary of the note: Local Note.")
+        assert ", by" not in text
+
     def test_headers_removed(self):
         text = prepare_text_for_tts("# Header\nContent", "T", ["A"])
         assert "# Header" not in text

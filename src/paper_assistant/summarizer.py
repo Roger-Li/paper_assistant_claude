@@ -238,6 +238,23 @@ def format_summary_file(metadata: PaperMetadata, summary: SummarizationResult) -
             "---",
             "",
         ]
+    elif metadata.source_type == SourceType.NOTE:
+        header_lines = [
+            "---",
+            f'title: "{safe_title}"',
+            "source_type: note",
+            f"source_slug: {metadata.source_slug}",
+        ]
+        if metadata.source_url:
+            header_lines.append(f"source_url: {metadata.source_url}")
+        header_lines.extend(["---", ""])
+
+        body_lines = [f"# {metadata.title}", ""]
+        if metadata.source_url:
+            body_lines.append(f"**Source**: [{metadata.title}]({metadata.source_url})  ")
+        if metadata.authors:
+            body_lines.append(f"**Authors**: {authors_str}")
+        body_lines.extend(["", "---", ""])
     else:
         # arXiv paper format (original behavior)
         header_lines = [

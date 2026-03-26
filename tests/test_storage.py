@@ -43,6 +43,10 @@ class TestFilenaming:
         result = make_summary_filename("2503.10291", "VisualPRM: Subtitle")
         assert result == "[Paper][2503.10291] VisualPRM - Subtitle.md"
 
+    def test_note_summary_filename(self):
+        result = make_summary_filename("local-note", "My Note", SourceType.NOTE)
+        assert result == "[Note][local-note] My Note.md"
+
     def test_audio_filename(self):
         assert make_audio_filename("2503.10291") == "2503.10291.mp3"
 
@@ -75,6 +79,10 @@ class TestStorageManager:
         assert not storage.paper_exists("2503.10291")
         storage.add_paper(sample_paper)
         assert storage.paper_exists("2503.10291")
+
+    def test_make_unique_slug(self, storage):
+        storage.add_paper(Paper(metadata=_make_metadata(arxiv_id=None, source_slug="reading-note", title="Reading Note")))
+        assert storage.make_unique_slug("reading-note") == "reading-note-2"
 
     def test_list_papers(self, storage):
         p1 = Paper(metadata=_make_metadata(arxiv_id="2501.00001", title="First"))
@@ -427,3 +435,39 @@ class TestWebArticleStorage:
         loaded = storage.get_paper("2503.10291")
         assert loaded.metadata.source_type == SourceType.ARXIV
         assert loaded.metadata.paper_id == "2503.10291"
+
+
+def _make_note_metadata(**overrides):
+    defaults = {
+        "source_type": SourceType.NOTE,
+        "source_slug": "local-reading-note",
+        "title": "Local Reading Note",
+        "authors": [],
+    }
+    defaults.update(overrides)
+    return PaperMetadata(**defaults)
+
+
+class TestNoteStorage:
+    @pytest.fixture
+    def storage(self, tmp_path):
+        config = _make_config(tmp_path)
+        config.ensure_dirs()
+        return StorageManager(config)
+
+    def test_add_and_get_note(self, storage):
+        paper = Paper(metadata=_make_note_metadata(), tags=["notes"])
+        storage.add_paper(paper)
+
+        retrieved = storage.get_paper("local-reading-note")
+        assert retrieved is not None
+        assert retrieved.metadata.source_type == SourceType.NOTE
+        assert retrieved.metadata.paper_id == "local-reading-note"
+
+    def test_save_summary_note_uses_note_prefix(self, storage):
+        paper = Paper(metadata=_make_note_metadata())
+        storage.add_paper(paper)
+
+        path = storage.save_summary("local-reading-note", "# Note\nBody")
+
+        assert path.name.startswith("[Note][local-reading-note]")

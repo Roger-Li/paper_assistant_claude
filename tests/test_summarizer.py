@@ -1,6 +1,12 @@
 """Tests for paper_assistant.summarizer parsing functions."""
 
-from paper_assistant.summarizer import find_one_pager, parse_summary_sections
+from paper_assistant.models import PaperMetadata, SourceType
+from paper_assistant.summarizer import (
+    SummarizationResult,
+    find_one_pager,
+    format_summary_file,
+    parse_summary_sections,
+)
 
 
 class TestParseSummarySections:
@@ -72,3 +78,21 @@ class TestFindOnePager:
             "Conclusion": "Done",
         }
         assert find_one_pager(sections) == "The one pager"
+
+
+class TestFormatSummaryFile:
+    def test_note_omits_empty_author_and_source_lines(self):
+        metadata = PaperMetadata(
+            source_type=SourceType.NOTE,
+            source_slug="local-note",
+            title="Local Note",
+            authors=[],
+        )
+        summary = SummarizationResult(full_markdown="Body text", one_pager="", sections={})
+
+        formatted = format_summary_file(metadata, summary)
+
+        assert "source_type: note" in formatted
+        assert "source_slug: local-note" in formatted
+        assert "**Authors**" not in formatted
+        assert "**Source**" not in formatted

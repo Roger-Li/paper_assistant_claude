@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from paper_assistant.web_article import is_arxiv_url, slugify_url
+from paper_assistant.web_article import is_arxiv_url, slugify_title, slugify_url
 
 
 class TestIsArxivUrl:
@@ -60,3 +60,11 @@ class TestSlugifyUrl:
         slug = slugify_url("https://www.thinkingmachines.ai/blog/on-policy-distillation/")
         assert "thinkingmachines" in slug
         assert "on-policy-distillation" in slug
+
+
+class TestSlugifyTitle:
+    def test_basic_title(self):
+        assert slugify_title("A Local Reading Note") == "a-local-reading-note"
+
+    def test_fallback_for_empty_slug(self):
+        assert slugify_title("!!!") == "note"

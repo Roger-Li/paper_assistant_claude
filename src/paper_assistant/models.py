@@ -27,21 +27,22 @@ class ReadingStatus(str, Enum):
 class SourceType(str, Enum):
     ARXIV = "arxiv"
     WEB = "web"
+    NOTE = "note"
 
 
 class PaperMetadata(BaseModel):
-    """Core metadata for a paper or web article.
+    """Core metadata for a paper, web article, or local note.
 
     For arXiv papers, ``arxiv_id`` is set and used as the primary key.
-    For web articles, ``source_slug`` is set and used as the primary key.
+    For web articles and notes, ``source_slug`` is set and used as the primary key.
     """
 
     # Source identification
     source_type: SourceType = SourceType.ARXIV
-    source_url: str | None = None  # canonical URL for web articles
-    source_slug: str | None = None  # URL-derived slug for web articles
+    source_url: str | None = None  # canonical URL for web articles / bookmarked notes
+    source_slug: str | None = None  # URL- or title-derived slug for non-arXiv entries
 
-    # arXiv-specific (optional for web articles)
+    # arXiv-specific (optional for web articles / notes)
     arxiv_id: str | None = None  # e.g., "2503.10291"
     arxiv_url: str | None = None  # https://arxiv.org/abs/2503.10291
     pdf_url: str | None = None  # https://arxiv.org/pdf/2503.10291
@@ -55,12 +56,21 @@ class PaperMetadata(BaseModel):
 
     @property
     def paper_id(self) -> str:
-        """Primary key: arxiv_id for arXiv papers, source_slug for web articles."""
+        """Primary key: arxiv_id for arXiv papers, source_slug otherwise."""
         if self.arxiv_id:
             return self.arxiv_id
         if self.source_slug:
             return self.source_slug
         raise ValueError("PaperMetadata has neither arxiv_id nor source_slug")
+
+    @property
+    def source_label(self) -> str:
+        """Human-friendly source label for narration and UI copy."""
+        if self.source_type == SourceType.WEB:
+            return "article"
+        if self.source_type == SourceType.NOTE:
+            return "note"
+        return "paper"
 
 
 class Paper(BaseModel):
