@@ -21,7 +21,7 @@ src/paper_assistant/
 ├── config.py       # Config loading and directory management
 ├── models.py       # Pydantic models, processing/reading status enums, SourceType
 ├── arxiv.py        # arXiv URL parsing, metadata fetch, PDF download
-├── pipeline.py     # Shared local-entry pipeline helpers used by CLI and web routes
+├── pipeline.py     # Shared local-entry/import helpers incl. import_paper_summary(), ImportResult, DuplicatePaperError
 ├── web_article.py  # Web article URL detection, slug generation, HTML fetch/extract
 ├── pdf.py          # PDF text extraction
 ├── prompt.py       # Prompt templates (paper + article variants)
@@ -36,6 +36,13 @@ src/paper_assistant/
     ├── templates/  # Jinja templates
     └── static/     # CSS and JS assets
 ```
+
+Shared prompt/skill assets:
+- `prompts/paper_summary_instructions.md` — tracked summary instructions read by Claude Code, Codex, and manual workflows; agent summaries should use normal Markdown paragraphs instead of hard-wrapped prose
+- `.claude/commands/summarize.md` — Claude Code thin adapter for the skill-based summary flow
+- `skills/codex/summarize-paper/SKILL.md` — in-repo Codex skill source
+- `.artifacts/summarize-paper/` — repo-local working directory for agent PDF/text/summary artifacts during skill runs
+- Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`.
 
 ## Design Docs
 
@@ -82,6 +89,11 @@ Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
    - Local markdown entries are keyed by `source_slug`, not by title text.
    - Deduplicate collisions by appending `-2`, `-3`, etc. before persisting.
 
+1d. `--force` imports must merge, not replace, existing state.
+   - Preserve `date_added`, `reading_status`, `notion_page_id`, `notion_modified_at`, `last_synced_at`, and `archived_at`.
+   - Merge tags by union; never remove existing tags during re-import.
+   - Preserve `audio_path` only when `--skip-audio` is set; otherwise clear and regenerate audio.
+
 2. Keep `index.json` and file paths consistent.
    - `pdf_path`, `summary_path`, and `audio_path` are stored relative to `data_dir`.
 
@@ -93,6 +105,10 @@ Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
 4. Preserve async boundaries.
    - Network and TTS paths are async.
    - CLI commands must bridge with `asyncio.run()` only at command entry points.
+
+4b. arXiv metadata `429`s should fail over quickly.
+   - Metadata fetches should prefer the abs-page fallback over burning the full API retry budget.
+   - If both API and abs-page metadata are rate-limited, surface the delay and let the caller retry later.
 
 5. TTS speaks full markdown summary content.
    - Audio generation uses full markdown, not only one-pager section.
@@ -122,6 +138,10 @@ Default is `~/.paper-assistant/` unless overridden by `PAPER_ASSIST_DATA_DIR`.
    - `source_type` preserves NOTE vs WEB when importing remote-only pages.
    - `source_url` preserves bookmarked links for non-arXiv entries.
 
+8c. Notion block writes must respect the API's nested-child depth limit.
+   - Do not send arbitrarily deep list trees in a single `POST /pages` or `PATCH /blocks/{id}/children` payload.
+   - Create/update paths should append deeper descendants recursively after the shallower parent blocks exist.
+
 ## Config Contracts
 
 Supported env vars (actual behavior in `config.py`):
@@ -142,6 +162,16 @@ Supported env vars (actual behavior in `config.py`):
 
 Resolution order:
 - CLI override -> env var -> `.env` -> default
+
+## CLI Surface (Current)
+
+- `paper-assist add <url>`
+- `paper-assist import <url>` (supports `--model` for summary provenance)
+- `paper-assist skill-import <url>` (shared import helper + JSON output for agent workflows; normalizes agent hard-wrapped prose before saving)
+- `paper-assist extract-text <pdf-path>` (PDF-to-markdown fallback for skills)
+- `paper-assist notion-preflight` (checks Notion DB reachability/schema before `--sync-notion` runs)
+- `paper-assist create --title ...`
+- `paper-assist notion-sync [--paper ...] [--dry-run]`
 
 ## API Surface (Current)
 
@@ -236,7 +266,7 @@ A task is complete only when all are true:
 10. Refactor: Break `_ast_node_to_blocks` (143 LOC) into per-block-type sub-functions for tables, lists, and code blocks.
 11. Workflow optimization: `--sync-notion` flag on `add`/`import` commands + web API. (See `docs/design-workflow-optimization.md` R1, R6)
 12. `SourceType.NOTE` + `paper-assist create` command + local note web/API flow are implemented; synthesis prompt templates (lit review, comparison, study guide) remain TODO for user finalization. (See R2)
-13. Codex slash commands: `/summarize` (single-paper, reuses existing `prompt.py` templates), `/import-summary`, `/lit-review`, `/compare` (multi-paper, uses new synthesis prompts). (See R4, R5)
+13. ~~Skill-based single-paper summary workflow for Claude Code/Codex.~~ (Done — tracked prompt asset, `/summarize`, Codex `summarize-paper` skill, `paper-assist skill-import`, `paper-assist extract-text`)
 14. Academic paper search MCP server integration — optional, for paper discovery in lit reviews. (See R3)
 15. Evaluate community research skills for adoption/inspiration. (See R7)
 

@@ -157,6 +157,7 @@ async def _arxiv_get_with_retries(
     backoff_base_seconds: float,
     backoff_cap_seconds: float,
     accept: str,
+    fail_fast_on_429: bool = False,
     params: dict[str, str] | None = None,
 ) -> httpx.Response:
     total_attempts = max_retries + 1
@@ -185,6 +186,11 @@ async def _arxiv_get_with_retries(
 
         if resp.status_code == 429:
             retry_after_seconds = _parse_retry_after_seconds(resp.headers.get("Retry-After"))
+            if fail_fast_on_429:
+                raise ArxivRateLimitError(
+                    attempts=attempt + 1,
+                    retry_after_seconds=retry_after_seconds,
+                )
             if attempt == max_retries:
                 raise ArxivRateLimitError(
                     attempts=total_attempts,
@@ -227,6 +233,41 @@ async def _arxiv_get_with_retries(
 
 
 async def fetch_metadata(arxiv_id: str, config: Config | None = None) -> PaperMetadata:
+    """Fetch paper metadata from arXiv, with abs-page fallback on transient failures."""
+    try:
+        return await _fetch_metadata_from_api(arxiv_id, config=config)
+    except (ArxivRateLimitError, httpx.TimeoutException, httpx.TransportError) as exc:
+        logger.warning("Falling back to abs-page metadata for %s after %s", arxiv_id, exc)
+        return await _fallback_abs_page_or_raise(arxiv_id=arxiv_id, config=config, original_exc=exc)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 429 or 500 <= status_code < 600:
+            logger.warning(
+                "Falling back to abs-page metadata for %s after HTTP %s",
+                arxiv_id,
+                status_code,
+            )
+            return await _fallback_abs_page_or_raise(
+                arxiv_id=arxiv_id,
+                config=config,
+                original_exc=exc,
+            )
+        raise
+
+
+async def _fallback_abs_page_or_raise(
+    *,
+    arxiv_id: str,
+    config: Config | None,
+    original_exc: Exception,
+) -> PaperMetadata:
+    try:
+        return await _fetch_metadata_from_abs_page(arxiv_id, config=config)
+    except Exception as fallback_exc:
+        raise original_exc from fallback_exc
+
+
+async def _fetch_metadata_from_api(arxiv_id: str, config: Config | None = None) -> PaperMetadata:
     """Fetch paper metadata from the arXiv Atom API.
 
     Uses: http://export.arxiv.org/api/query?id_list=2503.10291
@@ -251,6 +292,7 @@ async def fetch_metadata(arxiv_id: str, config: Config | None = None) -> PaperMe
             backoff_base_seconds=backoff_base,
             backoff_cap_seconds=backoff_cap,
             accept="application/atom+xml, application/xml;q=0.9, */*;q=0.1",
+            fail_fast_on_429=True,
         )
 
     root = ElementTree.fromstring(resp.text)
@@ -301,6 +343,96 @@ async def fetch_metadata(arxiv_id: str, config: Config | None = None) -> PaperMe
         arxiv_url=ARXIV_ABS_URL.format(arxiv_id=arxiv_id),
         pdf_url=ARXIV_PDF_URL.format(arxiv_id=arxiv_id),
     )
+
+
+async def _fetch_metadata_from_abs_page(
+    arxiv_id: str,
+    config: Config | None = None,
+) -> PaperMetadata:
+    """Fetch metadata from the arXiv abs page when API access is degraded."""
+    from bs4 import BeautifulSoup
+
+    user_agent, max_retries, backoff_base, backoff_cap = _resolve_request_policy(config)
+    abs_url = ARXIV_ABS_URL.format(arxiv_id=arxiv_id)
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await _arxiv_get_with_retries(
+            client=client,
+            url=abs_url,
+            request_label="abs-page",
+            user_agent=user_agent,
+            max_retries=max_retries,
+            backoff_base_seconds=backoff_base,
+            backoff_cap_seconds=backoff_cap,
+            accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+            fail_fast_on_429=True,
+        )
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    title = _meta_content(soup, "citation_title")
+    if not title and (heading := soup.find("h1", class_="title")):
+        title = heading.get_text(" ", strip=True).removeprefix("Title:").strip()
+    if not title:
+        raise PaperNotFoundError(f"No paper found for arXiv ID: {arxiv_id}")
+
+    authors = [
+        tag.get("content", "").strip()
+        for tag in soup.find_all("meta", attrs={"name": "citation_author"})
+        if tag.get("content")
+    ]
+    if not authors:
+        authors = [
+            link.get_text(" ", strip=True)
+            for link in soup.select(".authors a")
+            if link.get_text(" ", strip=True)
+        ]
+
+    abstract = _meta_content(soup, "citation_abstract")
+    if not abstract and (blockquote := soup.find("blockquote", class_="abstract")):
+        abstract = blockquote.get_text(" ", strip=True).removeprefix("Abstract:").strip()
+
+    published = _parse_abs_page_date(
+        _meta_content(soup, "citation_date")
+        or _meta_content(soup, "citation_publication_date")
+    )
+
+    return PaperMetadata(
+        arxiv_id=arxiv_id,
+        title=title,
+        authors=authors,
+        abstract=abstract,
+        published=published,
+        categories=[],
+        arxiv_url=abs_url,
+        pdf_url=ARXIV_PDF_URL.format(arxiv_id=arxiv_id),
+    )
+
+
+def _meta_content(soup, name: str) -> str:
+    tag = soup.find("meta", attrs={"name": name})
+    if tag and tag.get("content"):
+        return tag["content"].strip()
+    return ""
+
+
+def _parse_abs_page_date(value: str) -> datetime | None:
+    if not value:
+        return None
+
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 async def download_pdf(arxiv_id: str, output_path: Path, config: Config | None = None) -> Path:

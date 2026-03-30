@@ -45,6 +45,27 @@ class TestParseSummarySections:
         sections = parse_summary_sections(md)
         assert "1. One-Pager Summary" in sections
 
+    def test_parse_custom_instruction_sections(self):
+        md = """# One-Pager
+Alpha
+# Deep-Structure Map
+Beta
+# Critical Q&A
+Gamma
+# My-Level Adaptation
+Delta
+# Reading List
+Epsilon
+"""
+        sections = parse_summary_sections(md)
+        assert list(sections) == [
+            "One-Pager",
+            "Deep-Structure Map",
+            "Critical Q&A",
+            "My-Level Adaptation",
+            "Reading List",
+        ]
+
 
 class TestFindOnePager:
     def test_exact_match(self):
@@ -54,6 +75,10 @@ class TestFindOnePager:
     def test_short_name(self):
         sections = {"One-Pager": "Content here"}
         assert find_one_pager(sections) == "Content here"
+
+    def test_find_one_pager_matches_custom_header(self):
+        sections = {"One-Pager": "Custom content"}
+        assert find_one_pager(sections) == "Custom content"
 
     def test_numbered_header(self):
         sections = {"1. One-Pager Summary": "Numbered content"}

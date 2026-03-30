@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -392,6 +393,38 @@ def _load_local_summary_markdown(config: Config, paper: Paper) -> str:
     if not summary_path.exists():
         return ""
     return _strip_summary_wrapper(summary_path.read_text(encoding="utf-8"))
+
+
+def _block_payload(block: dict[str, Any]) -> dict[str, Any]:
+    block_type = block.get("type", "")
+    payload = block.get(block_type, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _block_children(block: dict[str, Any]) -> list[dict[str, Any]]:
+    children = _block_payload(block).get("children", [])
+    return children if isinstance(children, list) else []
+
+
+def _clone_block_for_notion_write(
+    block: dict[str, Any],
+    *,
+    child_depth_budget: int = 2,
+) -> dict[str, Any]:
+    """Trim descendants beyond Notion's inline nested-block write limit."""
+    cloned = copy.deepcopy(block)
+    payload = _block_payload(cloned)
+    children = payload.get("children", [])
+    if not isinstance(children, list) or not children:
+        return cloned
+    if child_depth_budget <= 0:
+        payload.pop("children", None)
+        return cloned
+    payload["children"] = [
+        _clone_block_for_notion_write(child, child_depth_budget=child_depth_budget - 1)
+        for child in children
+    ]
+    return cloned
 
 
 def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -863,6 +896,10 @@ class NotionClient:
             raise RuntimeError("Notion property mapping is not initialized.")
         return self._property_keys[canonical]
 
+    async def verify_database(self) -> None:
+        """Validate that the configured database is reachable and schema-compatible."""
+        await self._ensure_property_keys()
+
     async def list_papers(self) -> list[NotionPaper]:
         await self._ensure_property_keys()
         pages: list[dict[str, Any]] = []
@@ -1059,14 +1096,11 @@ class NotionClient:
                 source_type=paper.metadata.source_type,
                 source_url=paper.metadata.source_url,
             ),
-            "children": blocks[:100],
         }
         page = await self._request("POST", "/pages", json_payload=payload)
 
         page_id = page["id"]
-        if len(blocks) > 100:
-            for idx in range(100, len(blocks), 100):
-                await self.append_blocks(page_id, blocks[idx : idx + 100])
+        await self._append_blocks_tree(page_id, blocks)
 
         markdown = await self.fetch_page_markdown(page_id)
         page_obj = await self._request("GET", f"/pages/{page_id}")
@@ -1108,14 +1142,64 @@ class NotionClient:
         page_obj = await self._request("GET", f"/pages/{page_id}")
         return self._parse_page(page_obj, markdown)
 
-    async def append_blocks(self, page_id: str, blocks: list[dict[str, Any]]) -> None:
+    async def append_blocks(self, page_id: str, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not blocks:
-            return
-        await self._request(
+            return []
+        data = await self._request(
             "PATCH",
             f"/blocks/{page_id}/children",
             json_payload={"children": blocks},
         )
+        return data.get("results", [])
+
+    async def _append_blocks_tree(self, parent_id: str, blocks: list[dict[str, Any]]) -> None:
+        if not blocks:
+            return
+
+        for idx in range(0, len(blocks), 100):
+            batch = blocks[idx : idx + 100]
+            shallow_batch = [
+                _clone_block_for_notion_write(block, child_depth_budget=2)
+                for block in batch
+            ]
+            await self.append_blocks(parent_id, shallow_batch)
+            written = await self._fetch_blocks_recursive(parent_id)
+            written_batch = written[-len(batch) :]
+            if len(written_batch) != len(batch):
+                raise RuntimeError(
+                    "Notion block write verification failed: expected "
+                    f"{len(batch)} appended blocks under {parent_id}, got {len(written_batch)}."
+                )
+            for written_block, original_block in zip(written_batch, batch):
+                await self._append_deferred_descendants(written_block, original_block)
+
+    async def _append_deferred_descendants(
+        self,
+        written_block: dict[str, Any],
+        original_block: dict[str, Any],
+    ) -> None:
+        original_children = _block_children(original_block)
+        if not original_children:
+            return
+
+        written_children = _block_children(written_block)
+        if not written_children:
+            block_id = written_block.get("id")
+            if not block_id:
+                raise RuntimeError(
+                    "Notion block write verification failed: appended block is missing an id."
+                )
+            await self._append_blocks_tree(block_id, original_children)
+            return
+
+        if len(written_children) != len(original_children):
+            raise RuntimeError(
+                "Notion block write verification failed: expected "
+                f"{len(original_children)} child blocks, got {len(written_children)}."
+            )
+
+        for child_written, child_original in zip(written_children, original_children):
+            await self._append_deferred_descendants(child_written, child_original)
 
     async def replace_page_body(self, page_id: str, new_blocks: list[dict[str, Any]]) -> None:
         existing: list[dict[str, Any]] = []
@@ -1140,8 +1224,7 @@ class NotionClient:
             if block_id:
                 await self._request("PATCH", f"/blocks/{block_id}", json_payload={"archived": True})
 
-        for idx in range(0, len(new_blocks), 100):
-            await self.append_blocks(page_id, new_blocks[idx : idx + 100])
+        await self._append_blocks_tree(page_id, new_blocks)
 
     async def set_archived(self, page_id: str, archived: bool) -> None:
         await self._ensure_property_keys()
@@ -1604,3 +1687,22 @@ async def sync_notion(
 
     report.finalize()
     return report
+
+
+async def preflight_notion(
+    *,
+    config: Config,
+    notion_client: NotionClient | None = None,
+) -> None:
+    """Verify that the configured Notion database is reachable and compatible."""
+    if not config.notion_sync_enabled:
+        raise ValueError(
+            "Notion sync is disabled. Set PAPER_ASSIST_NOTION_SYNC_ENABLED=true to enable."
+        )
+    if not config.notion_token:
+        raise ValueError("PAPER_ASSIST_NOTION_TOKEN is required for Notion sync.")
+    if not config.notion_database_id:
+        raise ValueError("PAPER_ASSIST_NOTION_DATABASE_ID is required for Notion sync.")
+
+    client = notion_client or NotionClient(config.notion_token, config.notion_database_id)
+    await client.verify_database()

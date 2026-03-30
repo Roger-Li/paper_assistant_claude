@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,7 @@ import pytest
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.notion import (
+    NotionClient,
     NotionPaper,
     sync_notion,
     _markdown_to_blocks,
@@ -159,6 +161,71 @@ class FakeNotionClient:
         if self.fail_audio_upload:
             raise RuntimeError("mock audio upload failed")
         self.audio_calls.append(f"{page_id}:{audio_path.name}")
+
+
+class RecordingNotionWriteClient(NotionClient):
+    def __init__(self) -> None:
+        super().__init__("token", "db")
+        self.append_calls: list[tuple[str, list[dict[str, object]]]] = []
+        self.created_pages: list[dict[str, object]] = []
+        self._property_keys = {
+            "arxiv_id": "arxiv_id",
+            "title": "title",
+            "authors": "authors",
+            "tags": "tags",
+            "reading_status": "reading_status",
+            "summary_last_modified": "summary_last_modified",
+            "local_last_modified": "local_last_modified",
+            "archived": "archived",
+            "source_slug": "source_slug",
+            "source_type": "source_type",
+            "source_url": "source_url",
+        }
+        self._children_by_parent: dict[str, list[dict[str, object]]] = {}
+        self._next_id = 0
+
+    def _next_block_id(self) -> str:
+        self._next_id += 1
+        return f"block-{self._next_id}"
+
+    def _assign_ids(self, block: dict[str, object]) -> dict[str, object]:
+        stored = copy.deepcopy(block)
+        payload = stored.get(stored["type"], {})
+        assert isinstance(payload, dict)
+        children = payload.get("children", [])
+        stored["id"] = self._next_block_id()
+        stored["has_children"] = bool(children)
+        if children:
+            assigned_children = [self._assign_ids(child) for child in children]
+            payload["children"] = assigned_children
+            self._children_by_parent[stored["id"]] = assigned_children
+        return stored
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, object] | None = None,
+        params: dict[str, object] | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del params, timeout
+        if method == "POST" and path == "/pages":
+            self.created_pages.append(copy.deepcopy(json_payload or {}))
+            return {"id": "page-1"}
+        if method == "GET" and path == "/pages/page-1":
+            return {"id": "page-1", "properties": {}, "archived": False}
+        raise AssertionError(f"Unexpected request {method} {path}")
+
+    async def append_blocks(self, page_id: str, blocks: list[dict[str, object]]) -> list[dict[str, object]]:
+        self.append_calls.append((page_id, copy.deepcopy(blocks)))
+        stored = [self._assign_ids(block) for block in blocks]
+        self._children_by_parent.setdefault(page_id, []).extend(stored)
+        return copy.deepcopy(stored)
+
+    async def _fetch_blocks_recursive(self, parent_id: str) -> list[dict[str, object]]:
+        return copy.deepcopy(self._children_by_parent.get(parent_id, []))
 
 
 def _save_summary(storage: StorageManager, paper: Paper, markdown: str) -> None:
@@ -801,6 +868,59 @@ class TestMarkdownToBlocks:
         child_rt = children[0]["bulleted_list_item"]["rich_text"]
         italic_items = [r for r in child_rt if r.get("annotations", {}).get("italic")]
         assert len(italic_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_append_blocks_tree_recursively_writes_deep_mixed_lists():
+    client = RecordingNotionWriteClient()
+    blocks = _markdown_to_blocks("- parent\n  1. first\n     - child\n       - grandchild")
+
+    await client._append_blocks_tree("page-1", blocks)
+
+    assert len(client.append_calls) == 2
+    first_parent, first_blocks = client.append_calls[0]
+    assert first_parent == "page-1"
+    deep_child = first_blocks[0]["bulleted_list_item"]["children"][0]["numbered_list_item"]["children"][0]
+    assert "children" not in deep_child["bulleted_list_item"]
+
+    second_parent, second_blocks = client.append_calls[1]
+    assert second_parent != "page-1"
+    assert second_blocks[0]["bulleted_list_item"]["rich_text"][0]["text"]["content"] == "grandchild"
+
+
+@pytest.mark.asyncio
+async def test_create_page_omits_children_from_initial_page_create():
+    client = RecordingNotionWriteClient()
+    paper = Paper(metadata=_make_metadata())
+    summary_modified_at = datetime.now(timezone.utc)
+    client.fetch_page_markdown = AsyncMock(return_value="# One-Pager\nok")
+    client._parse_page = lambda page, markdown: NotionPaper(
+        page_id=page["id"],
+        arxiv_id=paper.metadata.arxiv_id,
+        source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
+        title=paper.metadata.title,
+        authors=paper.metadata.authors,
+        tags=[],
+        reading_status=ReadingStatus.UNREAD.value,
+        summary_markdown=markdown,
+        summary_last_modified=summary_modified_at,
+        local_last_modified=paper.local_modified_at,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    await client.create_page(
+        paper=paper,
+        summary_markdown="- parent\n  1. first\n     - child\n       - grandchild",
+        summary_modified_at=summary_modified_at,
+        include_audio=None,
+    )
+
+    assert len(client.created_pages) == 1
+    assert "children" not in client.created_pages[0]
+    assert len(client.append_calls) == 2
 
 
 class TestBlocksToMarkdown:

@@ -26,6 +26,23 @@ ATOM_ENTRY_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </feed>
 """
 
+ABS_PAGE_HTML = """<!doctype html>
+<html>
+  <head>
+    <meta name="citation_title" content="Fallback Paper" />
+    <meta name="citation_author" content="Alice" />
+    <meta name="citation_author" content="Bob" />
+    <meta name="citation_abstract" content="Fallback abstract" />
+    <meta name="citation_date" content="2025/03/13" />
+  </head>
+  <body>
+    <h1 class="title mathjax">Title: Fallback Paper</h1>
+    <blockquote class="abstract mathjax">Abstract: Fallback abstract</blockquote>
+    <div class="authors"><a>Alice</a><a>Bob</a></div>
+  </body>
+</html>
+"""
+
 
 def _metadata_response(
     status_code: int = 200,
@@ -38,6 +55,20 @@ def _metadata_response(
         headers=headers,
         text=text,
         request=httpx.Request("GET", "https://export.arxiv.org/api/query"),
+    )
+
+
+def _abs_page_response(
+    status_code: int = 200,
+    *,
+    headers: dict[str, str] | None = None,
+    text: str = ABS_PAGE_HTML,
+) -> httpx.Response:
+    return httpx.Response(
+        status_code=status_code,
+        headers=headers,
+        text=text,
+        request=httpx.Request("GET", "https://arxiv.org/abs/2503.10291"),
     )
 
 
@@ -95,11 +126,11 @@ class TestParseArxivUrl:
 
 class TestArxivRetries:
     @pytest.mark.asyncio
-    async def test_fetch_metadata_retries_429_then_succeeds(self):
+    async def test_fetch_metadata_falls_back_to_abs_page_immediately_after_429(self):
         get_mock = AsyncMock(
             side_effect=[
                 _metadata_response(429, headers={"Retry-After": "1"}),
-                _metadata_response(200),
+                _abs_page_response(200),
             ]
         )
         sleep_mock = AsyncMock()
@@ -109,18 +140,18 @@ class TestArxivRetries:
         ):
             metadata = await fetch_metadata("2503.10291", config=_test_config())
 
-        assert metadata.title == "Test Paper"
+        assert metadata.title == "Fallback Paper"
         assert get_mock.await_count == 2
-        assert sleep_mock.await_args_list[0].args[0] == 1.0
+        assert sleep_mock.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_fetch_metadata_honors_http_date_retry_after(self):
+    async def test_fetch_metadata_honors_http_date_retry_after_in_fail_fast_path(self):
         now = datetime(2026, 2, 14, 10, 0, 0, tzinfo=timezone.utc)
         retry_at = now + timedelta(seconds=15)
         get_mock = AsyncMock(
             side_effect=[
                 _metadata_response(429, headers={"Retry-After": format_datetime(retry_at)}),
-                _metadata_response(200),
+                _abs_page_response(429, headers={"Retry-After": "5"}),
             ]
         )
         sleep_mock = AsyncMock()
@@ -129,9 +160,11 @@ class TestArxivRetries:
             patch("paper_assistant.arxiv.asyncio.sleep", new=sleep_mock),
             patch("paper_assistant.arxiv._utc_now", return_value=now),
         ):
-            await fetch_metadata("2503.10291", config=_test_config())
+            with pytest.raises(ArxivRateLimitError, match="Retry in about 15s"):
+                await fetch_metadata("2503.10291", config=_test_config())
 
-        assert sleep_mock.await_args_list[0].args[0] == 15.0
+        assert get_mock.await_count == 2
+        assert sleep_mock.await_count == 0
 
     @pytest.mark.asyncio
     async def test_fetch_metadata_retries_transport_and_5xx_then_succeeds(self):
@@ -172,7 +205,7 @@ class TestArxivRetries:
         get_mock = AsyncMock(
             side_effect=[
                 _metadata_response(429, headers={"Retry-After": "5"}),
-                _metadata_response(429, headers={"Retry-After": "12"}),
+                _abs_page_response(429, headers={"Retry-After": "12"}),
             ]
         )
         sleep_mock = AsyncMock()
@@ -180,8 +213,29 @@ class TestArxivRetries:
             patch("paper_assistant.arxiv.httpx.AsyncClient.get", new=get_mock),
             patch("paper_assistant.arxiv.asyncio.sleep", new=sleep_mock),
         ):
-            with pytest.raises(ArxivRateLimitError, match="rate limit"):
+            with pytest.raises(ArxivRateLimitError, match="Retry in about 5s"):
                 await fetch_metadata("2503.10291", config=_test_config(arxiv_max_retries=1))
 
         assert get_mock.await_count == 2
-        assert sleep_mock.await_count == 1
+        assert sleep_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_metadata_falls_back_to_abs_page_after_rate_limit(self):
+        get_mock = AsyncMock(
+            side_effect=[
+                _metadata_response(429, headers={"Retry-After": "0"}),
+                _abs_page_response(200),
+            ]
+        )
+        sleep_mock = AsyncMock()
+        with (
+            patch("paper_assistant.arxiv.httpx.AsyncClient.get", new=get_mock),
+            patch("paper_assistant.arxiv.asyncio.sleep", new=sleep_mock),
+        ):
+            metadata = await fetch_metadata("2503.10291", config=_test_config())
+
+        assert metadata.title == "Fallback Paper"
+        assert metadata.abstract == "Fallback abstract"
+        assert metadata.authors == ["Alice", "Bob"]
+        assert get_mock.await_count == 2
+        assert sleep_mock.await_count == 0
