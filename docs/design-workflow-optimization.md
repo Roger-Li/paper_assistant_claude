@@ -18,8 +18,9 @@ sessions.
 
 **New needs**:
 - **Single-paper summaries via Claude Code**: User should also be able to generate
-  summaries within a Claude Code session using the existing prompt templates from
-  `prompt.py`, with the ability to adapt/improve prompts based on a paper's content.
+  summaries within a Claude Code session using the tracked instructions in
+  `prompts/paper_summary_instructions.md`, with the ability to adapt/improve
+  prompts based on a paper's content.
 - **Multi-paper synthesis**: Lit reviews, comparisons, study guides that synthesize
   across the existing paper library **and** additional papers discovered during the
   task (e.g., via MCP search or user-provided URLs).
@@ -59,8 +60,9 @@ Without MCP, the user provides URLs or paper IDs manually.
 
 **Recommendation**: Start with `arxiv-mcp-server` (free, arXiv-focused) for
 search and download capabilities. Use it for its MCP tools (search, download,
-convert to markdown), **not** its built-in analysis prompts — our own prompts in
-`prompt.py` are tailored to this repo's output format and should be preferred.
+convert to markdown), **not** its built-in analysis prompts — our tracked summary
+instructions in `prompts/paper_summary_instructions.md` are tailored to this
+repo's output format and should be preferred.
 
 ### Claude Code Skills for Research
 
@@ -147,30 +149,30 @@ Test that Claude Code can search for and read papers through the MCP tools.
 
 No code changes. Config in `.claude/settings.json`.
 
-### R4. Claude Code slash commands — `/summarize`, `/import-summary`
-**Scope**: Small — markdown files only
-**Effort**: ~1 session
-**Depends on**: R1
+### R4. Claude Code slash command — `/summarize` (Implemented)
+**Status**: Implemented via `.claude/commands/summarize.md`,
+`prompts/paper_summary_instructions.md`, `paper-assist skill-import`, and
+`paper-assist extract-text`.
 
-Create `.claude/commands/summarize.md` (a Claude Code slash command / skill):
-- Accepts arXiv URL/ID or web article URL as argument
-- Fetches the paper via `arxiv.py`/`web_article.py` or MCP (if available)
-- Generates summary using the **existing** prompt templates from `prompt.py`:
-  `SYSTEM_PROMPT` for arXiv papers, `ARTICLE_SYSTEM_PROMPT` for web articles
-- The skill instructs Claude to read `prompt.py` and follow those templates,
-  but also adapt/improve the output based on the paper's specific content
-  (e.g., more math detail for theory papers, more architecture detail for
-  systems papers)
-- Saves via `paper-assist import <url> --file <tmpfile> --sync-notion`
-- This enables single-paper summarization entirely within Claude Code when
-  the user prefers convenience over subscription-chat cost savings
-- **A skill/slash command is the natural form for this task** — it wraps the
-  fetch-summarize-import-sync pipeline into a single `/summarize` invocation,
-  reusing the repo's own prompt templates rather than relying on external tools
+Implemented behavior:
+- Accepts arXiv URL/ID as input
+- Runs `paper-assist notion-preflight` before the workflow when `--sync-notion` is requested
+- Downloads the PDF into repo-local `.artifacts/summarize-paper/<id>/`
+- Reads the tracked instructions in `prompts/paper_summary_instructions.md`
+- Falls back to `paper-assist extract-text --output` when native PDF reading is unavailable
+- Imports through the shared `pipeline.import_paper_summary()` path via
+  `paper-assist skill-import`
 
-Create `.claude/commands/import-summary.md`:
-- Thin wrapper: reads clipboard, runs `paper-assist import <url> --sync-notion`
-- For when user already generated a summary externally (Claude Pro, ChatGPT)
+Deviations from the original draft:
+- Uses a tracked prompt asset in `prompts/` instead of reading `prompt.py`
+- Uses a unified import helper in `pipeline.py` so `paper-assist import` and
+  `paper-assist skill-import` share force-merge semantics
+- Stores deterministic provenance through `--model` / `--model-version` CLI flags
+  instead of agent self-identification
+- Leaves `POST /api/import` as a follow-up cleanup path rather than migrating it here
+
+`/import-summary` remains unnecessary for now because `paper-assist skill-import`
+is the dedicated import handoff for agent workflows.
 
 ### R5. Claude Code slash commands — `/lit-review`, `/compare`
 **Scope**: Medium — markdown files with detailed prompt engineering
@@ -252,7 +254,7 @@ The recommended execution order, each as a separate Claude Code session:
 
 1. **R1** — `--sync-notion` flag (quick win, immediately improves daily workflow)
 2. **R3** — Install academic MCP server (config only, unlocks paper discovery)
-3. **R4** — `/summarize` + `/import-summary` commands (uses R1)
+3. **R4** — `/summarize` command (implemented)
 4. **R2** — `SourceType.NOTE` + `create` command (enables synthesis entries)
 5. **R5** — `/lit-review` + `/compare` commands (uses R2, R3)
 6. **R6** — Web UI checkbox (uses R1)

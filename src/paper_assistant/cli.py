@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 import subprocess
+import tempfile
 
 import click
 from rich.console import Console
@@ -337,12 +339,118 @@ def _read_markdown_input(file_path: str | None) -> str:
     return result.stdout
 
 
+def _build_model_label(model: str, model_version: str | None) -> str:
+    if not model_version:
+        return model
+    return f"{model}/{model_version}"
+
+
+def _import_result_to_dict(result) -> dict[str, object]:
+    return {
+        "paper_id": result.paper_id,
+        "title": result.title,
+        "summary_path": str(result.summary_path),
+        "audio_path": str(result.audio_path) if result.audio_path else None,
+        "model_used": result.model_used,
+        "notion_synced": result.notion_synced,
+        "notion_error": result.notion_error,
+        "warnings": result.warnings,
+    }
+
+
+def _print_import_result(result, success_message: str) -> None:
+    console.print()
+    console.print(f"[green]{success_message}[/green]")
+    console.print(f"  ID:      {result.paper_id}")
+    console.print(f"  Title:   [cyan]{result.title}[/cyan]")
+    console.print(f"  Summary: {result.summary_path}")
+    if result.audio_path:
+        console.print(f"  Audio:   {result.audio_path}")
+    console.print(f"  Model:   {result.model_used}")
+    if result.notion_synced:
+        console.print("  Notion:  Synced")
+    elif result.notion_error:
+        console.print(f"[yellow]Warning:[/yellow] Notion sync failed: {result.notion_error}")
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
+def _cleanup_roots() -> list[Path]:
+    return [
+        Path(tempfile.gettempdir()).resolve(),
+        (Path.cwd() / ".artifacts").resolve(strict=False),
+    ]
+
+
+def _is_within_cleanup_root(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _validate_cleanup_files(paths: tuple[str, ...]) -> list[Path]:
+    allowed_roots = _cleanup_roots()
+    validated: list[Path] = []
+
+    for raw_path in paths:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (Path.cwd() / candidate).resolve(strict=False)
+
+        if not _is_within_cleanup_root(candidate, allowed_roots):
+            raise click.BadParameter(
+                f"{candidate} must be under one of: {', '.join(str(root) for root in allowed_roots)}",
+                param_hint="--cleanup-file",
+            )
+
+        resolved = candidate.resolve(strict=True)
+        if not _is_within_cleanup_root(resolved, allowed_roots):
+            raise click.BadParameter(
+                f"{resolved} resolves outside the allowed cleanup roots",
+                param_hint="--cleanup-file",
+            )
+
+        if not resolved.is_file():
+            raise click.BadParameter(
+                f"{candidate} must be a regular file",
+                param_hint="--cleanup-file",
+            )
+
+        validated.append(candidate)
+
+    return validated
+
+
+def _recovery_artifact_paths(file_path: str, cleanup_paths: list[Path]) -> list[Path]:
+    paths: list[Path] = [Path(file_path)]
+    paths.extend(cleanup_paths)
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
 @main.command("import")
 @click.argument("url")
 @click.option("--file", "-f", "file_path", type=click.Path(exists=True), help="Read markdown from file instead of clipboard.")
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
 @click.option("--force", is_flag=True, help="Re-import even if paper already exists.")
+@click.option(
+    "--model",
+    default=None,
+    help="Model that generated this summary (e.g., 'claude-code'). Default: 'manual'.",
+)
 @click.pass_context
 def import_paper(
     ctx: click.Context,
@@ -351,6 +459,7 @@ def import_paper(
     skip_audio: bool,
     tags: tuple[str, ...],
     force: bool,
+    model: str | None,
 ) -> None:
     """Import a pre-generated summary from clipboard or file.
 
@@ -369,204 +478,145 @@ def import_paper(
             console.print("Copy your summary to the clipboard first, or use --file.")
         return
 
-    asyncio.run(
-        _import_paper(ctx.obj, url, markdown, skip_audio, list(tags), force)
-    )
-
-
-async def _import_paper(
-    obj: dict,
-    url: str,
-    markdown: str,
-    skip_audio: bool,
-    tags: list[str],
-    force: bool,
-) -> None:
-    """Import pipeline: parse URL -> fetch metadata -> save summary -> TTS -> RSS."""
-    from paper_assistant.web_article import is_arxiv_url
-
-    if is_arxiv_url(url):
-        await _import_arxiv_paper(obj, url, markdown, skip_audio, tags, force)
-    else:
-        await _import_web_article(obj, url, markdown, skip_audio, tags, force)
-
-
-async def _import_arxiv_paper(
-    obj: dict,
-    url: str,
-    markdown: str,
-    skip_audio: bool,
-    tags: list[str],
-    force: bool,
-) -> None:
-    """Import pipeline for arXiv papers."""
-    from paper_assistant.arxiv import fetch_metadata, parse_arxiv_url
-    from paper_assistant.config import load_config
-    from paper_assistant.models import Paper, ProcessingStatus
-    from paper_assistant.storage import StorageManager
-    from paper_assistant.summarizer import (
-        SummarizationResult,
-        find_one_pager,
-        format_summary_file,
-        parse_summary_sections,
-    )
-
-    config = load_config(**obj)
-    config.ensure_dirs()
-    storage = StorageManager(config)
-
-    # Step 1: Parse URL and fetch metadata
-    console.print("[bold]Step 1/4:[/bold] Parsing arXiv URL...")
     try:
-        arxiv_id = parse_arxiv_url(url)
-    except ValueError as e:
+        result = asyncio.run(
+            _run_import_pipeline(
+                ctx.obj,
+                url=url,
+                markdown=markdown,
+                skip_audio=skip_audio,
+                tags=list(tags),
+                force=force,
+                model=model or "manual",
+                sync_notion=False,
+            )
+        )
+    except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         return
 
-    if storage.paper_exists(arxiv_id) and not force:
-        console.print(
-            f"[yellow]Paper {arxiv_id} already exists. Use --force to re-import.[/yellow]"
-        )
-        return
-
-    console.print(f"[bold]Step 1/4:[/bold] Fetching metadata for {arxiv_id}...")
-    try:
-        metadata = await fetch_metadata(arxiv_id, config=config)
-    except Exception as e:
-        console.print(f"[red]Error fetching metadata:[/red] {e}")
-        return
-
-    paper_id = metadata.paper_id
-    console.print(f"  Title: [cyan]{metadata.title}[/cyan]")
-    console.print(f"  Authors: {', '.join(metadata.authors[:3])}")
-
-    # Step 2: Parse and save summary
-    console.print("[bold]Step 2/4:[/bold] Saving imported summary...")
-    sections = parse_summary_sections(markdown)
-    one_pager = find_one_pager(sections)
-
-    result = SummarizationResult(
-        full_markdown=markdown,
-        one_pager=one_pager,
-        sections=sections,
-        model_used="manual",
-    )
-
-    paper = Paper(
-        metadata=metadata,
-        tags=tags,
-        status=ProcessingStatus.PENDING,
-        model_used="manual",
-    )
-    storage.add_paper(paper)
-
-    summary_content = format_summary_file(metadata, result)
-    summary_path = storage.save_summary(paper_id, summary_content)
-    paper = storage.get_paper(paper_id)  # Re-fetch with updated summary_path
-
-    # Step 3: Generate audio
-    await _generate_audio_step(
-        config, storage, paper, result, metadata, paper_id, skip_audio, "3/4"
-    )
-
-    # Step 4: Update RSS feed
-    _update_feed_step(config, storage, paper, "4/4")
-
-    # Copy audio to iCloud Drive
-    if paper.audio_path and config.icloud_sync:
-        _copy_to_icloud(config, paper, metadata.title, paper_id)
-
-    console.print()
-    console.print("[green]Done![/green] Paper imported successfully.")
-    console.print(f"  Summary: {summary_path}")
-    if paper.audio_path:
-        console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
+    _print_import_result(result, "Summary imported successfully.")
 
 
-async def _import_web_article(
+async def _run_import_pipeline(
     obj: dict,
+    *,
     url: str,
     markdown: str,
     skip_audio: bool,
     tags: list[str],
     force: bool,
-) -> None:
-    """Import pipeline for web articles."""
+    model: str,
+    sync_notion: bool,
+):
     from paper_assistant.config import load_config
-    from paper_assistant.models import Paper, ProcessingStatus
+    from paper_assistant.pipeline import import_paper_summary
     from paper_assistant.storage import StorageManager
-    from paper_assistant.summarizer import (
-        SummarizationResult,
-        find_one_pager,
-        format_summary_file,
-        parse_summary_sections,
-    )
-    from paper_assistant.web_article import fetch_article
 
     config = load_config(**obj)
     config.ensure_dirs()
     storage = StorageManager(config)
 
-    # Step 1: Fetch article metadata
-    console.print("[bold]Step 1/4:[/bold] Fetching article metadata...")
-    try:
-        metadata, _body_text = await fetch_article(url)
-    except Exception as e:
-        console.print(f"[red]Error fetching article metadata:[/red] {e}")
-        return
-
-    paper_id = metadata.paper_id
-    if storage.paper_exists(paper_id) and not force:
-        console.print(
-            f"[yellow]Article {paper_id} already exists. Use --force to re-import.[/yellow]"
-        )
-        return
-
-    console.print(f"  Title: [cyan]{metadata.title}[/cyan]")
-    if metadata.authors:
-        console.print(f"  Authors: {', '.join(metadata.authors[:3])}")
-
-    # Step 2: Parse and save summary
-    console.print("[bold]Step 2/4:[/bold] Saving imported summary...")
-    sections = parse_summary_sections(markdown)
-    one_pager = find_one_pager(sections)
-
-    result = SummarizationResult(
-        full_markdown=markdown,
-        one_pager=one_pager,
-        sections=sections,
-        model_used="manual",
-    )
-
-    paper = Paper(
-        metadata=metadata,
+    return await import_paper_summary(
+        config=config,
+        storage=storage,
+        url=url,
+        markdown=markdown,
+        model=model,
         tags=tags,
-        status=ProcessingStatus.PENDING,
-        model_used="manual",
-    )
-    storage.add_paper(paper)
-
-    summary_content = format_summary_file(metadata, result)
-    summary_path = storage.save_summary(paper_id, summary_content)
-    paper = storage.get_paper(paper_id)
-
-    # Step 3: Generate audio
-    await _generate_audio_step(
-        config, storage, paper, result, metadata, paper_id, skip_audio, "3/4"
+        skip_audio=skip_audio,
+        force=force,
+        sync_notion=sync_notion,
     )
 
-    # Step 4: Update RSS feed
-    _update_feed_step(config, storage, paper, "4/4")
 
-    # Copy audio to iCloud Drive
-    if paper.audio_path and config.icloud_sync:
-        _copy_to_icloud(config, paper, metadata.title, paper_id)
+@main.command("skill-import")
+@click.argument("url")
+@click.option("--file", "file_path", required=True, type=click.Path(exists=True), help="Markdown summary file to import.")
+@click.option("--model", required=True, help="Stable model label for provenance (e.g., 'claude-code', 'codex').")
+@click.option("--model-version", default=None, help="Optional model version appended as model/version.")
+@click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
+@click.option("--sync-notion", is_flag=True, help="Run Notion sync for this paper after import.")
+@click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option("--force", is_flag=True, help="Merge over an existing paper instead of failing.")
+@click.option("--cleanup-file", multiple=True, help="Temporary file to delete after a successful import.")
+@click.option("--json", "json_output", is_flag=True, help="Output ImportResult as JSON.")
+@click.pass_context
+def skill_import(
+    ctx: click.Context,
+    url: str,
+    file_path: str,
+    model: str,
+    model_version: str | None,
+    tags: tuple[str, ...],
+    sync_notion: bool,
+    skip_audio: bool,
+    force: bool,
+    cleanup_file: tuple[str, ...],
+    json_output: bool,
+) -> None:
+    """Import a skill-generated summary with deterministic provenance."""
+    cleanup_paths = _validate_cleanup_files(cleanup_file)
+    markdown = Path(file_path).read_text(encoding="utf-8")
 
-    console.print()
-    console.print("[green]Done![/green] Article imported successfully.")
-    console.print(f"  Summary: {summary_path}")
-    if paper.audio_path:
-        console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
+    if not markdown.strip():
+        raise click.ClickException("No markdown content found in --file.")
+
+    model_label = _build_model_label(model, model_version)
+
+    try:
+        result = asyncio.run(
+            _run_import_pipeline(
+                ctx.obj,
+                url=url,
+                markdown=markdown,
+                skip_audio=skip_audio,
+                tags=list(tags),
+                force=force,
+                model=model_label,
+                sync_notion=sync_notion,
+            )
+        )
+    except Exception as exc:
+        recovery_paths = _recovery_artifact_paths(file_path, cleanup_paths)
+        console.print("[yellow]Artifacts preserved for manual recovery:[/yellow]")
+        for recovery_path in recovery_paths:
+            console.print(f"  - {recovery_path}")
+        raise click.ClickException(str(exc)) from exc
+
+    for cleanup_path in cleanup_paths:
+        try:
+            cleanup_path.unlink()
+        except Exception as exc:
+            result.warnings.append(f"Cleanup failed for {cleanup_path}: {exc}")
+
+    if json_output:
+        click.echo(json.dumps(_import_result_to_dict(result), indent=2))
+        return
+
+    _print_import_result(result, "Skill import completed successfully.")
+
+
+@main.command("extract-text")
+@click.argument("pdf_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--max-pages", default=100, show_default=True, help="Maximum number of pages to extract.")
+@click.option("--output", type=click.Path(dir_okay=False), help="Write extracted markdown to a file instead of stdout.")
+def extract_text(pdf_path: str, max_pages: int, output: str | None) -> None:
+    """Extract PDF text as markdown for skill fallback workflows."""
+    from paper_assistant.pdf import extract_text_from_pdf
+
+    try:
+        markdown = extract_text_from_pdf(Path(pdf_path), max_pages=max_pages)
+    except Exception as exc:
+        raise click.ClickException(f"Failed to extract text: {exc}") from exc
+
+    if output:
+        output_path = Path(output)
+        output_path.write_text(markdown, encoding="utf-8")
+        console.print(f"[green]Extracted markdown written to[/green] {output_path}")
+        return
+
+    click.echo(markdown, nl=False)
 
 
 @main.command("create")
@@ -841,3 +891,24 @@ async def _notion_sync(obj: dict, paper_id: str | None, dry_run: bool) -> None:
         console.print("[red]Errors:[/red]")
         for error in data["errors"]:
             console.print(f"  - {error}")
+
+
+@main.command("notion-preflight")
+@click.pass_context
+def notion_preflight(ctx: click.Context) -> None:
+    """Verify that Notion sync can reach the configured database."""
+    asyncio.run(_notion_preflight(ctx.obj))
+
+
+async def _notion_preflight(obj: dict) -> None:
+    from paper_assistant.config import load_config
+    from paper_assistant.notion import preflight_notion
+
+    config = load_config(**obj)
+
+    try:
+        await preflight_notion(config=config)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+    console.print("[green]Notion preflight passed.[/green] Database is reachable and schema-compatible.")

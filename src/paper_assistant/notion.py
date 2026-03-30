@@ -863,6 +863,10 @@ class NotionClient:
             raise RuntimeError("Notion property mapping is not initialized.")
         return self._property_keys[canonical]
 
+    async def verify_database(self) -> None:
+        """Validate that the configured database is reachable and schema-compatible."""
+        await self._ensure_property_keys()
+
     async def list_papers(self) -> list[NotionPaper]:
         await self._ensure_property_keys()
         pages: list[dict[str, Any]] = []
@@ -1604,3 +1608,22 @@ async def sync_notion(
 
     report.finalize()
     return report
+
+
+async def preflight_notion(
+    *,
+    config: Config,
+    notion_client: NotionClient | None = None,
+) -> None:
+    """Verify that the configured Notion database is reachable and compatible."""
+    if not config.notion_sync_enabled:
+        raise ValueError(
+            "Notion sync is disabled. Set PAPER_ASSIST_NOTION_SYNC_ENABLED=true to enable."
+        )
+    if not config.notion_token:
+        raise ValueError("PAPER_ASSIST_NOTION_TOKEN is required for Notion sync.")
+    if not config.notion_database_id:
+        raise ValueError("PAPER_ASSIST_NOTION_DATABASE_ID is required for Notion sync.")
+
+    client = notion_client or NotionClient(config.notion_token, config.notion_database_id)
+    await client.verify_database()

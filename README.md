@@ -94,13 +94,16 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | Command | Description |
 |---|---|
 | `paper-assist add <url>` | Full pipeline: fetch -> summarize -> audio -> feed (arXiv or web URL) |
-| `paper-assist import <url>` | Import pre-written markdown summary (arXiv or web URL) |
+| `paper-assist import <url>` | Import pre-written markdown summary (arXiv or web URL, optional `--model`) |
+| `paper-assist skill-import <url>` | Agent-oriented import with deterministic provenance, cleanup, and JSON output |
+| `paper-assist extract-text <pdf-path>` | Extract PDF text to markdown for skill fallback workflows |
 | `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark |
 | `paper-assist list` | List papers (`--status`, `--tag`) |
 | `paper-assist show <paper_id>` | Print summary in terminal |
 | `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
 | `paper-assist serve` | Start local web app |
 | `paper-assist regenerate-feed` | Rebuild RSS feed from index |
+| `paper-assist notion-preflight` | Verify the configured Notion database is reachable/shared |
 | `paper-assist notion-sync` | Manual two-way sync with Notion (`--paper`, `--dry-run`) |
 
 ## Common Workflows
@@ -127,7 +130,7 @@ Useful flags:
 paper-assist import https://arxiv.org/abs/2503.10291 -t survey
 
 # Web article with file
-paper-assist import https://example.com/blog/post --file summary.md
+paper-assist import https://example.com/blog/post --file summary.md --model claude-code
 
 # cross-platform mode
 paper-assist import https://arxiv.org/abs/2503.10291 --file summary.md
@@ -172,6 +175,64 @@ paper-assist notion-sync
 # run sync for one paper
 paper-assist notion-sync --paper 2503.10291
 ```
+
+## Skills
+
+The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. Both the Claude Code command and the Codex skill read the same tracked instructions from `prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
+
+### Setup
+
+```bash
+./scripts/install-skills.sh
+```
+
+The installer symlinks the in-repo Codex skill into `~/.codex/skills/` and prints the Claude Code permission entries needed for:
+- `curl` PDF download
+- `paper-assist skill-import`
+- `paper-assist extract-text`
+
+### Claude Code
+
+Use:
+
+```text
+/summarize <arxiv-url-or-id> [--tags ...] [--sync-notion] [--skip-audio] [--force]
+```
+
+The command downloads the PDF, reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`.
+
+### Codex
+
+Ask:
+
+```text
+Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
+```
+
+The in-repo `skills/codex/summarize-paper/SKILL.md` follows the same prompt asset and import path, but stamps provenance as `codex`.
+
+Both skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxiv_id>/` instead of hardcoded `/tmp/...` paths. That keeps the intermediate PDF/markdown/summary files visible while the workflow is running, and `skill-import` can clean them up safely afterward because `.artifacts/` is an allowed cleanup root.
+
+### `skill-import`
+
+`paper-assist skill-import <url>` is the shared agent-facing import command. Key flags:
+- `--file SUMMARY.md`: required markdown input
+- `--model LABEL` and optional `--model-version VERSION`: stored as `model_used`, e.g. `codex/gpt-5.4`
+- `--sync-notion`: runs a targeted Notion sync after import
+- `--cleanup-file /path`: accepts files under Python's temp dir or the repo-local `.artifacts/` tree
+- `--skip-audio`: preserves an existing `audio_path` on forced re-imports instead of regenerating
+- `--force`: merges over an existing paper instead of replacing it
+- `--json`: emits machine-readable output for agent wrappers
+
+Force re-imports preserve `date_added`, `reading_status`, Notion linkage/timestamps, and `archived_at`; tags are unioned; existing audio is kept only when `--skip-audio` is set.
+
+### `extract-text`
+
+Use `paper-assist extract-text <pdf-path> [--max-pages 100] [--output FILE]` when a skill can download a PDF but cannot read it natively. This is a thin wrapper around the existing PDF-to-markdown extraction path, and the intended fallback is `--output .artifacts/summarize-paper/<id>/paper.md`.
+
+### `notion-preflight`
+
+Use `paper-assist notion-preflight` before a skill run that plans to pass `--sync-notion`. It verifies that the configured Notion database is reachable/shared and that the schema is compatible before the paper workflow starts.
 
 ## Web UI and API
 
@@ -316,7 +377,7 @@ If retries are exhausted, wait for the suggested delay in the error and retry th
 
 ### Paper already exists
 
-Use `--force` to overwrite processing for `add`/`import`.
+Use `--force` to merge a new import over the existing record. Re-import keeps the original `date_added`, reading state, Notion linkage, and archive state; tags are unioned; audio is only preserved when you also pass `--skip-audio`.
 
 ### Audio missing
 
@@ -344,6 +405,7 @@ Most common causes:
 - Notion file upload constraints for audio attachment.
 
 Notes:
+- `paper-assist notion-preflight` is the fastest way to confirm the database is reachable/shared before a skill run.
 - `paper-assist notion-sync --dry-run` only validates mapping/plan and does not upload files.
 - Audio upload failures are reported as warnings and do not abort summary/tag/status sync.
 

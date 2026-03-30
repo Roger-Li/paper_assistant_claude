@@ -26,6 +26,23 @@ ATOM_ENTRY_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </feed>
 """
 
+ABS_PAGE_HTML = """<!doctype html>
+<html>
+  <head>
+    <meta name="citation_title" content="Fallback Paper" />
+    <meta name="citation_author" content="Alice" />
+    <meta name="citation_author" content="Bob" />
+    <meta name="citation_abstract" content="Fallback abstract" />
+    <meta name="citation_date" content="2025/03/13" />
+  </head>
+  <body>
+    <h1 class="title mathjax">Title: Fallback Paper</h1>
+    <blockquote class="abstract mathjax">Abstract: Fallback abstract</blockquote>
+    <div class="authors"><a>Alice</a><a>Bob</a></div>
+  </body>
+</html>
+"""
+
 
 def _metadata_response(
     status_code: int = 200,
@@ -38,6 +55,20 @@ def _metadata_response(
         headers=headers,
         text=text,
         request=httpx.Request("GET", "https://export.arxiv.org/api/query"),
+    )
+
+
+def _abs_page_response(
+    status_code: int = 200,
+    *,
+    headers: dict[str, str] | None = None,
+    text: str = ABS_PAGE_HTML,
+) -> httpx.Response:
+    return httpx.Response(
+        status_code=status_code,
+        headers=headers,
+        text=text,
+        request=httpx.Request("GET", "https://arxiv.org/abs/2503.10291"),
     )
 
 
@@ -183,5 +214,26 @@ class TestArxivRetries:
             with pytest.raises(ArxivRateLimitError, match="rate limit"):
                 await fetch_metadata("2503.10291", config=_test_config(arxiv_max_retries=1))
 
-        assert get_mock.await_count == 2
+        assert get_mock.await_count == 3
         assert sleep_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_metadata_falls_back_to_abs_page_after_rate_limit(self):
+        get_mock = AsyncMock(
+            side_effect=[
+                _metadata_response(429, headers={"Retry-After": "0"}),
+                _metadata_response(429, headers={"Retry-After": "0"}),
+                _metadata_response(429, headers={"Retry-After": "0"}),
+                _abs_page_response(200),
+            ]
+        )
+        sleep_mock = AsyncMock()
+        with (
+            patch("paper_assistant.arxiv.httpx.AsyncClient.get", new=get_mock),
+            patch("paper_assistant.arxiv.asyncio.sleep", new=sleep_mock),
+        ):
+            metadata = await fetch_metadata("2503.10291", config=_test_config())
+
+        assert metadata.title == "Fallback Paper"
+        assert metadata.abstract == "Fallback abstract"
+        assert metadata.authors == ["Alice", "Bob"]
