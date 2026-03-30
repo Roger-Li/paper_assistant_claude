@@ -50,7 +50,7 @@ FORMAT RULES:
 - Keep the One-Pager Summary readable as standalone (it will be converted to audio)
 - Be precise with numbers from the paper
 - Do not hallucinate information not in the paper
-- Keep line width <= 90 chars for readability
+- Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs
 """
 
 USER_PROMPT_TEMPLATE = """\
@@ -124,7 +124,7 @@ FORMAT RULES:
 (it will be converted to audio)
 - Be precise with numbers from the article
 - Do not hallucinate information not in the article
-- Keep line width <= 90 chars for readability
+- Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs
 """
 
 ARTICLE_USER_PROMPT_TEMPLATE = """\

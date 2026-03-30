@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from click.testing import CliRunner
 
-from paper_assistant.cli import main
+from paper_assistant.cli import _normalize_skill_markdown, main
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
 from paper_assistant.pipeline import DuplicatePaperError, ImportResult, import_paper_summary
@@ -390,6 +390,34 @@ def _import_result(tmp_path: Path) -> ImportResult:
 
 
 class TestSkillImportCli:
+    def test_normalize_skill_markdown_unwraps_agent_paragraphs(self):
+        wrapped = (
+            "# One-Pager\n\n"
+            "This paper argues that many \"Aha moment\" behaviors in LLMs are better\n"
+            "explained by how models externalize uncertainty than by the presence of\n"
+            "surface markers such as \"Wait\" alone.\n\n"
+            "- Introduces a closed-world, information-theoretic view of reasoning as\n"
+            "  self-conditioning over a target variable `Y`.\n\n"
+            "> **TL;DR:** Good reasoning is not just step execution; it is uncertainty\n"
+            "> made explicit early enough to steer future computation.\n"
+        )
+
+        normalized = _normalize_skill_markdown(wrapped)
+
+        assert (
+            'This paper argues that many "Aha moment" behaviors in LLMs are better '
+            'explained by how models externalize uncertainty than by the presence of '
+            'surface markers such as "Wait" alone.'
+        ) in normalized
+        assert (
+            "- Introduces a closed-world, information-theoretic view of reasoning as "
+            "self-conditioning over a target variable `Y`."
+        ) in normalized
+        assert (
+            "> **TL;DR:** Good reasoning is not just step execution; it is uncertainty "
+            "made explicit early enough to steer future computation."
+        ) in normalized
+
     def test_skill_import_cli_json(self, tmp_path):
         runner = CliRunner()
         summary_path = tmp_path / "summary.md"
@@ -420,6 +448,42 @@ class TestSkillImportCli:
         assert payload["paper_id"] == "2503.10291"
         assert payload["model_used"] == "codex/gpt-5.4"
         assert payload["notion_synced"] is True
+
+    def test_skill_import_cli_normalizes_hard_wrapped_markdown(self, tmp_path):
+        runner = CliRunner()
+        summary_path = tmp_path / "summary.md"
+        summary_path.write_text(
+            "# One-Pager\n\n"
+            "This paper argues that many \"Aha moment\" behaviors in LLMs are better\n"
+            "explained by how models externalize uncertainty than by the presence of\n"
+            "surface markers such as \"Wait\" alone.\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "paper_assistant.cli._run_import_pipeline",
+            new=AsyncMock(return_value=_import_result(tmp_path)),
+        ) as run_import:
+            result = runner.invoke(
+                main,
+                [
+                    "skill-import",
+                    "https://arxiv.org/abs/2503.10291",
+                    "--file",
+                    str(summary_path),
+                    "--model",
+                    "codex",
+                ],
+            )
+
+        assert result.exit_code == 0
+        forwarded_markdown = run_import.await_args.kwargs["markdown"]
+        assert "\nexplained by how models externalize uncertainty" not in forwarded_markdown
+        assert (
+            'This paper argues that many "Aha moment" behaviors in LLMs are better '
+            'explained by how models externalize uncertainty than by the presence of '
+            'surface markers such as "Wait" alone.'
+        ) in forwarded_markdown
 
     def test_skill_import_cli_cleanup_success(self, tmp_path):
         runner = CliRunner()

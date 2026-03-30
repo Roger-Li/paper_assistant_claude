@@ -196,10 +196,10 @@ The installer symlinks the in-repo Codex skill into `~/.codex/skills/` and print
 Use:
 
 ```text
-/summarize <arxiv-url-or-id> [--tags ...] [--sync-notion] [--skip-audio] [--force]
+/summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--force]
 ```
 
-The command downloads the PDF, reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`.
+The command downloads the PDF, reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
 
 ### Codex
 
@@ -209,7 +209,7 @@ Ask:
 Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
 ```
 
-The in-repo `skills/codex/summarize-paper/SKILL.md` follows the same prompt asset and import path, but stamps provenance as `codex`.
+The in-repo `skills/codex/summarize-paper/SKILL.md` follows the same prompt asset and import path, but stamps provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
 
 Both skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxiv_id>/` instead of hardcoded `/tmp/...` paths. That keeps the intermediate PDF/markdown/summary files visible while the workflow is running, and `skill-import` can clean them up safely afterward because `.artifacts/` is an allowed cleanup root.
 
@@ -220,6 +220,7 @@ Both skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxi
 - `--model LABEL` and optional `--model-version VERSION`: stored as `model_used`, e.g. `codex/gpt-5.4`
 - `--sync-notion`: runs a targeted Notion sync after import
 - `--cleanup-file /path`: accepts files under Python's temp dir or the repo-local `.artifacts/` tree
+- agent hard-wrap cleanup: ordinary prose paragraphs from Claude Code/Codex summaries are normalized to soft-wrapped Markdown before saving
 - `--skip-audio`: preserves an existing `audio_path` on forced re-imports instead of regenerating
 - `--force`: merges over an existing paper instead of replacing it
 - `--json`: emits machine-readable output for agent wrappers
@@ -232,7 +233,7 @@ Use `paper-assist extract-text <pdf-path> [--max-pages 100] [--output FILE]` whe
 
 ### `notion-preflight`
 
-Use `paper-assist notion-preflight` before a skill run that plans to pass `--sync-notion`. It verifies that the configured Notion database is reachable/shared and that the schema is compatible before the paper workflow starts.
+Skill-based summary runs now sync Notion by default, so `paper-assist notion-preflight` is the check those workflows run before import. Use `--no-sync-notion` only when you intentionally want to skip that sync.
 
 ## Web UI and API
 
@@ -367,7 +368,9 @@ paper-assist import <arxiv-url> --file summary.md
 arXiv can throttle API clients when request cadence is too high or clients are not clearly identified.
 
 Paper Assistant now retries `429` and transient failures with exponential backoff and honors `Retry-After`
-when arXiv provides it. To reduce throttling risk, set a descriptive User-Agent with contact info:
+when arXiv provides it. For metadata lookups specifically, the import path now falls back to the arXiv abs page
+immediately on a metadata `429` instead of exhausting the full API retry budget first. To reduce throttling risk,
+set a descriptive User-Agent with contact info:
 
 ```bash
 export PAPER_ASSIST_ARXIV_USER_AGENT="paper-assistant/0.1 (you@example.com)"

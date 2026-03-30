@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -345,6 +346,136 @@ def _build_model_label(model: str, model_version: str | None) -> str:
     return f"{model}/{model_version}"
 
 
+_LIST_ITEM_RE = re.compile(r"^(\s*(?:[-+*]|\d+\.)\s+)(.*)$")
+_BLOCKQUOTE_RE = re.compile(r"^(\s*>\s?)(.*)$")
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_HRULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_TABLE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _is_structural_markdown_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        stripped == "$$"
+        or _HEADING_RE.match(line)
+        or _LIST_ITEM_RE.match(line)
+        or _BLOCKQUOTE_RE.match(line)
+        or _FENCE_RE.match(line)
+        or _HRULE_RE.match(line)
+        or _TABLE_LINE_RE.match(line)
+    )
+
+
+def _fold_wrapped_lines(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+
+    folded: list[str] = []
+    current = lines[0].strip()
+    for raw_line in lines[1:]:
+        next_part = raw_line.strip()
+        if not current:
+            current = next_part
+            continue
+        if current.endswith("  "):
+            folded.append(current.rstrip())
+            current = next_part
+            continue
+        current = f"{current} {next_part}".strip()
+
+    if current:
+        folded.append(current.rstrip())
+    return folded
+
+
+def _normalize_skill_markdown(markdown: str) -> str:
+    """Remove email-style hard wraps from agent-generated prose blocks."""
+    lines = markdown.splitlines()
+    normalized: list[str] = []
+    idx = 0
+
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.strip()
+
+        if not stripped:
+            normalized.append("")
+            idx += 1
+            continue
+
+        if _FENCE_RE.match(line):
+            normalized.append(line)
+            fence_marker = _FENCE_RE.match(line).group(1)
+            idx += 1
+            while idx < len(lines):
+                normalized.append(lines[idx])
+                if lines[idx].strip().startswith(fence_marker):
+                    idx += 1
+                    break
+                idx += 1
+            continue
+
+        if stripped == "$$":
+            normalized.append(line)
+            idx += 1
+            while idx < len(lines):
+                normalized.append(lines[idx])
+                if lines[idx].strip() == "$$":
+                    idx += 1
+                    break
+                idx += 1
+            continue
+
+        list_match = _LIST_ITEM_RE.match(line)
+        if list_match:
+            item_lines = [list_match.group(2)]
+            prefix = list_match.group(1)
+            idx += 1
+            while idx < len(lines):
+                next_line = lines[idx]
+                if not next_line.strip() or _is_structural_markdown_line(next_line):
+                    break
+                item_lines.append(next_line)
+                idx += 1
+            for folded in _fold_wrapped_lines(item_lines):
+                normalized.append(f"{prefix}{folded}")
+            continue
+
+        quote_match = _BLOCKQUOTE_RE.match(line)
+        if quote_match:
+            quote_lines = [quote_match.group(2)]
+            prefix = quote_match.group(1)
+            idx += 1
+            while idx < len(lines):
+                next_line = lines[idx]
+                next_match = _BLOCKQUOTE_RE.match(next_line)
+                if not next_line.strip() or not next_match:
+                    break
+                quote_lines.append(next_match.group(2))
+                idx += 1
+            for folded in _fold_wrapped_lines(quote_lines):
+                normalized.append(f"{prefix}{folded}")
+            continue
+
+        if _is_structural_markdown_line(line):
+            normalized.append(line)
+            idx += 1
+            continue
+
+        paragraph_lines = [line]
+        idx += 1
+        while idx < len(lines):
+            next_line = lines[idx]
+            if not next_line.strip() or _is_structural_markdown_line(next_line):
+                break
+            paragraph_lines.append(next_line)
+            idx += 1
+        normalized.extend(_fold_wrapped_lines(paragraph_lines))
+
+    return "\n".join(normalized) + ("\n" if markdown.endswith("\n") else "")
+
+
 def _import_result_to_dict(result) -> dict[str, object]:
     return {
         "paper_id": result.paper_id,
@@ -557,7 +688,7 @@ def skill_import(
 ) -> None:
     """Import a skill-generated summary with deterministic provenance."""
     cleanup_paths = _validate_cleanup_files(cleanup_file)
-    markdown = Path(file_path).read_text(encoding="utf-8")
+    markdown = _normalize_skill_markdown(Path(file_path).read_text(encoding="utf-8"))
 
     if not markdown.strip():
         raise click.ClickException("No markdown content found in --file.")

@@ -156,7 +156,7 @@ No code changes. Config in `.claude/settings.json`.
 
 Implemented behavior:
 - Accepts arXiv URL/ID as input
-- Runs `paper-assist notion-preflight` before the workflow when `--sync-notion` is requested
+- Runs `paper-assist notion-preflight` before the workflow by default; users can opt out with `--no-sync-notion`
 - Downloads the PDF into repo-local `.artifacts/summarize-paper/<id>/`
 - Reads the tracked instructions in `prompts/paper_summary_instructions.md`
 - Falls back to `paper-assist extract-text --output` when native PDF reading is unavailable

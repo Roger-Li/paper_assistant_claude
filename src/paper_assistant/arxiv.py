@@ -157,6 +157,7 @@ async def _arxiv_get_with_retries(
     backoff_base_seconds: float,
     backoff_cap_seconds: float,
     accept: str,
+    fail_fast_on_429: bool = False,
     params: dict[str, str] | None = None,
 ) -> httpx.Response:
     total_attempts = max_retries + 1
@@ -185,6 +186,11 @@ async def _arxiv_get_with_retries(
 
         if resp.status_code == 429:
             retry_after_seconds = _parse_retry_after_seconds(resp.headers.get("Retry-After"))
+            if fail_fast_on_429:
+                raise ArxivRateLimitError(
+                    attempts=attempt + 1,
+                    retry_after_seconds=retry_after_seconds,
+                )
             if attempt == max_retries:
                 raise ArxivRateLimitError(
                     attempts=total_attempts,
@@ -286,6 +292,7 @@ async def _fetch_metadata_from_api(arxiv_id: str, config: Config | None = None) 
             backoff_base_seconds=backoff_base,
             backoff_cap_seconds=backoff_cap,
             accept="application/atom+xml, application/xml;q=0.9, */*;q=0.1",
+            fail_fast_on_429=True,
         )
 
     root = ElementTree.fromstring(resp.text)
@@ -358,6 +365,7 @@ async def _fetch_metadata_from_abs_page(
             backoff_base_seconds=backoff_base,
             backoff_cap_seconds=backoff_cap,
             accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+            fail_fast_on_429=True,
         )
 
     soup = BeautifulSoup(resp.text, "html.parser")

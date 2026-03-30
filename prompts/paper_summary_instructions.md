@@ -176,7 +176,7 @@ Tailored explainer based on user profile / paper type:
 - Use Markdown headings exactly as shown:
   `# One-Pager`, `# Deep-Structure Map`, `# Critical Q&A`,
   `# My-Level Adaptation`, `# Reading List`, `# Follow-ups`.
-- Keep line width ≤90 chars when practical (email-friendly).
+- Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs.
 - In the **first response**, always deliver **(1)–(5)**.
 - If length is tight, compress verbosity but **never omit**: citations,
   limitations, failure cases, or reviewer skepticism.
