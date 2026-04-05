@@ -1,9 +1,8 @@
 # Paper Assistant Workflow Optimization — Full Roadmap
 
 This document is a comprehensive plan for optimizing the paper-assistant workflow.
-Roadmap items are tracked in the `Prioritized Roadmap` section of `CLAUDE.md`
-(items 11–15) and are designed to be tackled one-by-one in individual Claude Code
-sessions.
+Roadmap items are tracked in [`docs/roadmap.md`](roadmap.md) and are designed to
+be tackled one-by-one in individual Claude Code sessions.
 
 ---
 

@@ -15,12 +15,17 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    before the rest of the workflow. If that fails, stop immediately.
 4. Create a repo-local artifact directory:
    `.artifacts/summarize-paper/<id>/`
-5. Download the PDF:
-   `curl -sL -o .artifacts/summarize-paper/<id>/paper.pdf https://arxiv.org/pdf/<id>`
-6. Prefer native PDF reading first.
-   Fallback only if native PDF reading is unavailable or fails:
-   `.venv/bin/paper-assist extract-text .artifacts/summarize-paper/<id>/paper.pdf --output .artifacts/summarize-paper/<id>/paper.md`
-   then read the extracted markdown file instead.
+5. Fetch the paper content using `hf papers read <id>` (HuggingFace CLI).
+   Redirect stdout to a file to avoid shell output truncation on long papers:
+   `hf papers read <id> > .artifacts/summarize-paper/<id>/paper.md`
+   Then read `.artifacts/summarize-paper/<id>/paper.md` as the paper content.
+   Fallback only if `hf papers read` fails or produces an empty file:
+   a. Download the PDF:
+      `curl -sL -o .artifacts/summarize-paper/<id>/paper.pdf https://arxiv.org/pdf/<id>`
+   b. Prefer native PDF reading first.
+   c. If native PDF reading fails, extract text:
+      `.venv/bin/paper-assist extract-text .artifacts/summarize-paper/<id>/paper.pdf --output .artifacts/summarize-paper/<id>/paper.md`
+      then read the extracted markdown file.
 7. Generate the summary from the tracked instructions.
    Adaptations for the saved document:
    - Omit `# Follow-ups` because it is interactive-only
@@ -29,20 +34,26 @@ Use this skill when the user wants a paper summarized and stored through Paper A
      theoretical contributions, comparison with prior work, open questions)
 8. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
 9. Import it in the foreground:
-   `.venv/bin/paper-assist skill-import <url> \
+   `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model codex \
      [--tags ...] --sync-notion [--skip-audio] [--force] \
-     --cleanup-file .artifacts/summarize-paper/<id>/paper.pdf \
-     [--cleanup-file .artifacts/summarize-paper/<id>/paper.md] \
      --cleanup-file .artifacts/summarize-paper/<id>/summary.md \
+     --cleanup-file .artifacts/summarize-paper/<id>/paper.md \
+     [--cleanup-file .artifacts/summarize-paper/<id>/paper.pdf] \
      --json`
+   Always pass the arXiv URL (`https://arxiv.org/abs/<id>`) to `skill-import`,
+   not the original HuggingFace or other URL, so that the paper_id resolves to
+   the arXiv ID.
    Omit `--sync-notion` only when the user explicitly passed `--no-sync-notion`.
+   `paper.md` is always created (by `hf papers read` or `extract-text`).
+   Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
 10. Parse the JSON output and report the result to the user.
 
 ## Error Handling
 
-- `curl` failure: retry once, then stop and report the failure
+- `hf papers read` failure: fall back to PDF download + native read + extract-text
+- `curl` failure (in fallback path): retry once, then stop and report the failure
 - PDF read failure: fall back to `extract-text --output`
 - arXiv metadata/API failure during import: `skill-import` now falls back to abs-page metadata immediately on metadata `429`s instead of burning the full API retry budget; if arXiv still rate-limits after fallback, stop and wait 2+ minutes before retrying
 - Import failure: report the error and the exact artifact paths kept under `.artifacts/summarize-paper/<id>/`

@@ -187,9 +187,11 @@ The skill-based workflow automates the manual loop of reading a paper, generatin
 ```
 
 The installer symlinks the in-repo Codex skill into `~/.codex/skills/` and prints the Claude Code permission entries needed for:
-- `curl` PDF download
+- `hf papers read` (primary paper fetch)
+- `curl` PDF download (fallback)
 - `paper-assist skill-import`
 - `paper-assist extract-text`
+- `paper-assist notion-preflight`
 
 ### Claude Code
 
@@ -199,7 +201,7 @@ Use:
 /summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--force]
 ```
 
-The command downloads the PDF, reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
+The command fetches the paper via `hf papers read` (falling back to PDF download), reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
 
 ### Codex
 
@@ -418,6 +420,12 @@ Notes:
 source .venv/bin/activate
 pytest tests/
 ```
+
+### Documentation
+
+- **[README.md](README.md)** — user-facing setup, configuration, workflows, troubleshooting
+- **[CLAUDE.md](CLAUDE.md)** — agent/contributor playbook: critical invariants, workflow checklists, testing expectations
+- **[docs/](docs/)** — design docs for implemented features and [roadmap](docs/roadmap.md)
 
 ## License
 

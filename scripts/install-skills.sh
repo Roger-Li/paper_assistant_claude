@@ -14,8 +14,10 @@ cat <<'GUIDE'
 Claude Code setup — add these to .claude/settings.local.json
 under permissions.allow:
 
-  "Bash(curl -sL -o /tmp/paper_*)"
+  "Bash(hf papers read *)"
+  "Bash(curl -sL -o .artifacts/summarize-paper/*)"
   "Bash(.venv/bin/paper-assist skill-import *)"
   "Bash(.venv/bin/paper-assist extract-text *)"
+  "Bash(.venv/bin/paper-assist notion-preflight)"
 
 GUIDE
