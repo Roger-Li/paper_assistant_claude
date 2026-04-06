@@ -9,7 +9,7 @@
 <details>
     <summary>Add a new paper or article</summary>
     <form id="add-form">
-        <input type="url" name="url" placeholder="https://arxiv.org/abs/2503.10291 or any article URL" required>
+        <input type="text" name="url" placeholder="2603.19835, an arXiv/HF paper URL, or any article URL" required>
         <input type="text" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
         <button type="submit">Add Paper</button>
     </form>
@@ -20,8 +20,8 @@
 <details>
     <summary>Import a pre-generated summary</summary>
     <form id="import-form">
-        <label for="import-url">URL</label>
-        <input type="url" id="import-url" name="url" placeholder="https://arxiv.org/abs/2503.10291 or any article URL" required>
+        <label for="import-url">URL or arXiv ID</label>
+        <input type="text" id="import-url" name="url" placeholder="2603.19835, an arXiv/HF paper URL, or any article URL" required>
         <label for="import-tags">Tags</label>
         <input type="text" id="import-tags" name="tags" placeholder="Tags (comma-separated, e.g. multimodal, rl)">
         <label for="import-markdown">Markdown summary</label>

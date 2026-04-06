@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from paper_assistant.web_article import is_arxiv_url, slugify_title, slugify_url
 
 
@@ -19,6 +17,9 @@ class TestIsArxivUrl:
 
     def test_bare_arxiv_id_with_version(self):
         assert is_arxiv_url("2503.10291v2")
+
+    def test_hf_paper_url(self):
+        assert is_arxiv_url("https://huggingface.co/papers/2503.10291")
 
     def test_non_arxiv_url(self):
         assert not is_arxiv_url("https://example.com/blog/post")

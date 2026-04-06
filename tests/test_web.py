@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,7 @@ from paper_assistant.arxiv import ArxivRateLimitError
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
 from paper_assistant.storage import StorageManager
+from paper_assistant.summarizer import SummarizationResult
 from paper_assistant.web.app import create_app
 
 
@@ -117,6 +119,14 @@ class TestIndexPage:
         resp = client.get("/?sort=invalid_field")
         assert resp.status_code == 200
         assert "2503.10291" in resp.text
+
+    def test_forms_accept_arxiv_ids_and_hf_paper_urls(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'name="url" placeholder="2603.19835, an arXiv/HF paper URL, or any article URL"' in resp.text
+        assert 'id="import-url" name="url" placeholder="2603.19835, an arXiv/HF paper URL, or any article URL"' in resp.text
+        assert 'type="url" name="url"' not in resp.text
+        assert 'type="url" id="import-url"' not in resp.text
 
 
 class TestPaperDetailPage:
@@ -336,10 +346,9 @@ class TestApiImport:
     def test_import_success(self, client, config):
         mock_metadata = _make_metadata()
         with (
-            patch("paper_assistant.arxiv.parse_arxiv_url", return_value="2503.10291"),
-            patch("paper_assistant.arxiv.fetch_metadata", new_callable=AsyncMock, return_value=mock_metadata),
-            patch("paper_assistant.tts.text_to_speech", new_callable=AsyncMock),
-            patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
+            patch("paper_assistant.pipeline.fetch_hf_metadata", new_callable=AsyncMock, return_value=mock_metadata),
+            patch("paper_assistant.pipeline.text_to_speech", new_callable=AsyncMock),
+            patch("paper_assistant.pipeline.generate_feed", return_value="<rss/>"),
         ):
             resp = client.post(
                 "/api/import",
@@ -353,6 +362,91 @@ class TestApiImport:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["paper_id"] == "2503.10291"
+
+    def test_import_prefers_hf_metadata_when_arxiv_is_unavailable(self, client):
+        mock_metadata = _make_metadata(
+            arxiv_id="2601.15621",
+            title="Qwen3-TTS Technical Report",
+            authors=["Hangrui Hu", "Xinfa Zhu"],
+        )
+        with (
+            patch(
+                "paper_assistant.pipeline.fetch_hf_metadata",
+                new_callable=AsyncMock,
+                return_value=mock_metadata,
+            ),
+            patch("paper_assistant.pipeline.fetch_arxiv_metadata", new_callable=AsyncMock) as fetch_arxiv,
+            patch("paper_assistant.pipeline.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.post(
+                "/api/import",
+                json={
+                    "url": "https://arxiv.org/abs/2601.15621",
+                    "markdown": "# One-Pager\nSummary content",
+                    "skip_audio": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["paper_id"] == "2601.15621"
+        fetch_arxiv.assert_not_awaited()
+
+    def test_import_hf_paper_url_normalizes_to_arxiv_id(self, client):
+        mock_metadata = _make_metadata(
+            arxiv_id="2603.19835",
+            title="FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization",
+        )
+        with (
+            patch(
+                "paper_assistant.pipeline.fetch_hf_metadata",
+                new_callable=AsyncMock,
+                return_value=mock_metadata,
+            ),
+            patch("paper_assistant.pipeline.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.post(
+                "/api/import",
+                json={
+                    "url": "https://huggingface.co/papers/2603.19835",
+                    "markdown": "# One-Pager\nSummary content",
+                    "skip_audio": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["paper_id"] == "2603.19835"
+
+    def test_import_requires_both_metadata_failures_to_be_transient_before_guessing(self, client):
+        request = httpx.Request("GET", "https://huggingface.co/api/papers/2503.10291")
+        response = httpx.Response(404, request=request)
+        hf_404 = httpx.HTTPStatusError("not found", request=request, response=response)
+
+        with (
+            patch(
+                "paper_assistant.pipeline.fetch_hf_metadata",
+                new_callable=AsyncMock,
+                side_effect=hf_404,
+            ),
+            patch(
+                "paper_assistant.pipeline.fetch_arxiv_metadata",
+                new_callable=AsyncMock,
+                side_effect=ArxivRateLimitError(attempts=3, retry_after_seconds=45),
+            ),
+        ):
+            resp = client.post(
+                "/api/import",
+                json={
+                    "url": "https://arxiv.org/abs/2503.10291",
+                    "markdown": "# Summary\nbody",
+                    "skip_audio": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+        assert "Retry in about 45s" in resp.json()["error"]
 
     def test_import_invalid_url(self, client):
         resp = client.post(
@@ -383,24 +477,33 @@ class TestApiImport:
         )
         assert resp.status_code == 422
 
-    def test_import_arxiv_rate_limit_error_message(self, client):
+    def test_import_arxiv_rate_limit_falls_back_to_summary_metadata(self, client):
         with (
-            patch("paper_assistant.arxiv.parse_arxiv_url", return_value="2503.10291"),
             patch(
-                "paper_assistant.arxiv.fetch_metadata",
+                "paper_assistant.pipeline.fetch_hf_metadata",
+                new_callable=AsyncMock,
+                side_effect=httpx.ReadTimeout("hf down"),
+            ),
+            patch(
+                "paper_assistant.pipeline.fetch_arxiv_metadata",
                 new_callable=AsyncMock,
                 side_effect=ArxivRateLimitError(attempts=3, retry_after_seconds=45),
             ),
         ):
             resp = client.post(
                 "/api/import",
-                json={"url": "https://arxiv.org/abs/2503.10291", "markdown": "# Summary\nbody"},
+                json={
+                    "url": "https://arxiv.org/abs/2503.10291",
+                    "markdown": "# Summary\nbody",
+                    "skip_audio": True,
+                },
             )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert "error" in data
-        assert "rate limit" in data["error"].lower()
+        assert data["status"] == "ok"
+        assert data["paper_id"] == "2503.10291"
+        assert data["title"] == "arXiv 2503.10291"
 
 
 class TestApiCreate:
@@ -448,6 +551,48 @@ class TestApiCreate:
     def test_create_missing_fields(self, client):
         resp = client.post("/api/create", json={"title": "Only title"})
         assert resp.status_code == 422
+
+
+class TestApiAdd:
+    def test_add_hf_paper_url_normalizes_to_arxiv_id(self, client, storage):
+        mock_metadata = _make_metadata(
+            arxiv_id="2603.19835",
+            title="FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization",
+        )
+        with (
+            patch("paper_assistant.hf_papers.fetch_metadata", new_callable=AsyncMock, return_value=mock_metadata),
+            patch(
+                "paper_assistant.hf_papers.fetch_markdown_body",
+                new_callable=AsyncMock,
+                return_value="Abstract\n========\n\n" + "Body " * 700,
+            ),
+            patch(
+                "paper_assistant.summarizer.summarize_paper_text",
+                new_callable=AsyncMock,
+                return_value=SummarizationResult(
+                    full_markdown="# One-Pager\nSummary",
+                    one_pager="Summary",
+                    sections={"One-Pager": "Summary"},
+                    model_used="claude-test",
+                    input_tokens=10,
+                    output_tokens=20,
+                ),
+            ),
+            patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
+        ):
+            resp = client.post(
+                "/api/add",
+                params={
+                    "url": "https://huggingface.co/papers/2603.19835",
+                    "skip_audio": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["paper_id"] == "2603.19835"
+        assert storage.get_paper("2603.19835") is not None
+        assert storage.get_paper("huggingface-co-papers-2603-19835") is None
 
 
 class TestApiUpdateSummary:

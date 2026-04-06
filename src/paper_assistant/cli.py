@@ -35,7 +35,11 @@ def main(ctx: click.Context, data_dir: str | None) -> None:
 
 @main.command()
 @click.argument("url")
-@click.option("--native-pdf", is_flag=True, help="Send raw PDF to Claude (preserves figures, more expensive).")
+@click.option(
+    "--native-pdf",
+    is_flag=True,
+    help="When PDF fallback is needed, send raw PDF to Claude instead of extracted text.",
+)
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
 @click.option("--force", is_flag=True, help="Re-process even if paper already exists.")
@@ -48,10 +52,12 @@ def add(
     tags: tuple[str, ...],
     force: bool,
 ) -> None:
-    """Add and summarize a paper from an arXiv URL or web article URL.
+    """Add and summarize a paper from an arXiv ID, paper URL, or web article URL.
 
     Examples:
+      paper-assist add 2503.10291
       paper-assist add https://arxiv.org/abs/2503.10291
+      paper-assist add https://huggingface.co/papers/2503.10291
       paper-assist add https://example.com/blog/article
     """
     asyncio.run(_add_paper(ctx.obj, url, native_pdf, skip_audio, list(tags), force))
@@ -83,18 +89,19 @@ async def _add_arxiv_paper(
     force: bool,
 ) -> None:
     """arXiv paper pipeline: fetch -> extract -> summarize -> TTS -> RSS."""
-    from paper_assistant.arxiv import download_pdf, fetch_metadata, parse_arxiv_url
+    from paper_assistant.arxiv import download_pdf, fetch_metadata as fetch_arxiv_metadata, parse_arxiv_url
     from paper_assistant.config import load_config
+    from paper_assistant.hf_papers import (
+        fetch_markdown_body as fetch_hf_markdown_body,
+        fetch_metadata as fetch_hf_metadata,
+    )
     from paper_assistant.models import Paper, ProcessingStatus
-    from paper_assistant.podcast import generate_feed
-    from paper_assistant.storage import StorageManager, make_audio_filename, make_pdf_filename
+    from paper_assistant.storage import StorageManager, make_pdf_filename
     from paper_assistant.summarizer import (
         format_summary_file,
         summarize_paper_pdf,
         summarize_paper_text,
     )
-    from paper_assistant.tts import prepare_text_for_tts, text_to_speech
-
     config = load_config(**obj)
     config.ensure_dirs()
     storage = StorageManager(config)
@@ -115,10 +122,16 @@ async def _add_arxiv_paper(
 
     console.print(f"[bold]Step 1/5:[/bold] Fetching metadata for {arxiv_id}...")
     try:
-        metadata = await fetch_metadata(arxiv_id, config=config)
+        metadata = await fetch_hf_metadata(arxiv_id, config=config)
+        console.print("  Source: Hugging Face paper metadata")
     except Exception as e:
-        console.print(f"[red]Error fetching metadata:[/red] {e}")
-        return
+        console.print(f"  [yellow]HF metadata unavailable:[/yellow] {e}")
+        try:
+            metadata = await fetch_arxiv_metadata(arxiv_id, config=config)
+            console.print("  Source: arXiv metadata fallback")
+        except Exception as fallback_exc:
+            console.print(f"[red]Error fetching metadata:[/red] {fallback_exc}")
+            return
 
     paper_id = metadata.paper_id
     console.print(f"  Title: [cyan]{metadata.title}[/cyan]")
@@ -132,25 +145,36 @@ async def _add_arxiv_paper(
     )
     storage.add_paper(paper)
 
-    # Step 2: Download PDF
-    console.print("[bold]Step 2/5:[/bold] Downloading PDF...")
+    # Step 2: Fetch paper content
+    console.print("[bold]Step 2/5:[/bold] Fetching paper content...")
+    paper_text: str | None = None
     pdf_path = config.pdfs_dir / make_pdf_filename(paper_id)
     try:
-        await download_pdf(arxiv_id, pdf_path, config=config)
-        paper.pdf_path = f"pdfs/{make_pdf_filename(paper_id)}"
+        paper_text = await fetch_hf_markdown_body(arxiv_id, config=config)
         paper.status = ProcessingStatus.FETCHED
         storage.add_paper(paper)
+        console.print(f"  Source: Hugging Face arXiv HTML markdown ({len(paper_text)} characters)")
     except Exception as e:
-        console.print(f"[red]Error downloading PDF:[/red] {e}")
-        paper.status = ProcessingStatus.ERROR
-        paper.error_message = str(e)
-        storage.add_paper(paper)
-        return
+        console.print(f"  [yellow]HF markdown unavailable or rejected:[/yellow] {e}")
+        console.print("  Falling back to PDF.")
+        try:
+            await download_pdf(arxiv_id, pdf_path, config=config)
+            paper.pdf_path = f"pdfs/{make_pdf_filename(paper_id)}"
+            paper.status = ProcessingStatus.FETCHED
+            storage.add_paper(paper)
+        except Exception as pdf_exc:
+            console.print(f"[red]Error downloading PDF:[/red] {pdf_exc}")
+            paper.status = ProcessingStatus.ERROR
+            paper.error_message = str(pdf_exc)
+            storage.add_paper(paper)
+            return
 
     # Step 3: Summarize with Claude
     console.print(f"[bold]Step 3/5:[/bold] Summarizing with {config.claude_model}...")
     try:
-        if native_pdf:
+        if paper_text is not None:
+            result = await summarize_paper_text(config, metadata, paper_text)
+        elif native_pdf:
             result = await summarize_paper_pdf(config, metadata, pdf_path)
         else:
             from paper_assistant.pdf import extract_text_from_pdf

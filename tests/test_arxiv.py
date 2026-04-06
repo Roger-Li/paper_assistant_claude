@@ -108,6 +108,12 @@ class TestParseArxivUrl:
     def test_www_prefix(self):
         assert parse_arxiv_url("https://www.arxiv.org/abs/2503.10291") == "2503.10291"
 
+    def test_hf_paper_url(self):
+        assert parse_arxiv_url("https://huggingface.co/papers/2503.10291") == "2503.10291"
+
+    def test_hf_short_domain(self):
+        assert parse_arxiv_url("https://hf.co/papers/2503.10291v2") == "2503.10291"
+
     def test_whitespace_stripped(self):
         assert parse_arxiv_url("  2503.10291  ") == "2503.10291"
 

@@ -41,7 +41,7 @@ def _make_web_metadata(slug: str = "example-com-blog-test", title: str = "Test A
     return PaperMetadata(
         source_type=SourceType.WEB,
         source_slug=slug,
-        source_url=f"https://example.com/blog/test",
+        source_url="https://example.com/blog/test",
         title=title,
         authors=["Web Author"],
     )

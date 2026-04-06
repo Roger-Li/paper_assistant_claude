@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import logging
 from pathlib import Path
+import re
 import shutil
 
-from paper_assistant.arxiv import fetch_metadata, parse_arxiv_url
+import httpx
+
+from paper_assistant.arxiv import (
+    ArxivRateLimitError,
+    PaperNotFoundError,
+    fetch_metadata as fetch_arxiv_metadata,
+    parse_arxiv_url,
+)
 from paper_assistant.config import Config
+from paper_assistant.hf_papers import fetch_metadata as fetch_hf_metadata
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, SourceType
 from paper_assistant.notion import sync_notion as run_notion_sync
 from paper_assistant.podcast import generate_feed
@@ -20,6 +31,8 @@ from paper_assistant.summarizer import (
 )
 from paper_assistant.tts import prepare_text_for_tts, text_to_speech
 from paper_assistant.web_article import fetch_article, is_arxiv_url, slugify_title
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -158,9 +171,21 @@ async def import_paper_summary(
     """Import a pre-generated summary through the shared pipeline."""
     config.ensure_dirs()
 
-    metadata = await _resolve_import_metadata(url=url, config=config)
+    existing: Paper | None = None
+    if is_arxiv_url(url):
+        arxiv_id = parse_arxiv_url(url)
+        existing = storage.get_paper(arxiv_id)
+        if storage.paper_exists(arxiv_id) and not force:
+            raise DuplicatePaperError(arxiv_id)
+
+    metadata = await _resolve_import_metadata(
+        url=url,
+        markdown=markdown,
+        config=config,
+        existing=existing if force else None,
+    )
     paper_id = metadata.paper_id
-    existing = storage.get_paper(paper_id)
+    existing = storage.get_paper(paper_id) or existing
 
     if existing and not force:
         raise DuplicatePaperError(paper_id)
@@ -250,13 +275,200 @@ async def import_paper_summary(
     )
 
 
-async def _resolve_import_metadata(*, url: str, config: Config) -> PaperMetadata:
+async def _resolve_import_metadata(
+    *,
+    url: str,
+    markdown: str,
+    config: Config,
+    existing: Paper | None = None,
+) -> PaperMetadata:
     if is_arxiv_url(url):
         arxiv_id = parse_arxiv_url(url)
-        return await fetch_metadata(arxiv_id, config=config)
+        return await _resolve_import_arxiv_metadata(
+            arxiv_id=arxiv_id,
+            markdown=markdown,
+            config=config,
+            existing=existing,
+        )
 
     metadata, _body_text = await fetch_article(url)
     return metadata
+
+
+async def _resolve_import_arxiv_metadata(
+    *,
+    arxiv_id: str,
+    markdown: str,
+    config: Config,
+    existing: Paper | None,
+) -> PaperMetadata:
+    hf_exc: Exception | None = None
+    try:
+        return await fetch_hf_metadata(arxiv_id, config=config)
+    except Exception as exc:
+        hf_exc = exc
+        logger.warning("HF metadata unavailable for %s during import: %s", arxiv_id, exc)
+
+    try:
+        return await fetch_arxiv_metadata(arxiv_id, config=config)
+    except Exception as exc:
+        arxiv_transient = _is_transient_metadata_error(exc)
+        hf_transient = hf_exc is not None and _is_transient_metadata_error(hf_exc)
+
+        if not arxiv_transient:
+            raise
+
+        if existing is not None:
+            logger.warning(
+                "Reusing existing metadata for %s after transient remote metadata failure: %s",
+                arxiv_id,
+                exc,
+            )
+            return existing.metadata
+
+        if not hf_transient:
+            raise exc
+
+        logger.warning(
+            "Falling back to summary-derived metadata for %s after remote metadata failures: %s",
+            arxiv_id,
+            exc,
+        )
+        return _derive_import_metadata_from_summary(arxiv_id=arxiv_id, markdown=markdown)
+
+
+def _is_transient_metadata_error(exc: Exception) -> bool:
+    if isinstance(exc, (ArxivRateLimitError, httpx.TimeoutException, httpx.TransportError)):
+        return True
+
+    if isinstance(exc, PaperNotFoundError):
+        return False
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code == 429 or status_code == 408 or 500 <= status_code < 600
+
+    return False
+
+
+def _derive_import_metadata_from_summary(*, arxiv_id: str, markdown: str) -> PaperMetadata:
+    sections = parse_summary_sections(markdown)
+    one_pager = find_one_pager(sections) or markdown
+    identity_line = _extract_summary_identity_line(one_pager)
+    title = _extract_title_from_identity(identity_line) or f"arXiv {arxiv_id}"
+    authors = _extract_authors_from_identity(identity_line)
+    abstract = _extract_summary_abstract(one_pager, identity_line)
+    published = _extract_year_from_identity(identity_line)
+
+    return PaperMetadata(
+        arxiv_id=arxiv_id,
+        title=title,
+        authors=authors,
+        abstract=abstract,
+        published=published,
+        categories=[],
+        arxiv_url=f"https://arxiv.org/abs/{arxiv_id}",
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+    )
+
+
+def _strip_inline_markdown(text: str) -> str:
+    """Strip one outer layer of simple inline markdown markers.
+
+    This is intentionally shallow because the summary-derived metadata fallback
+    only needs light cleanup for identity lines such as `*Title, 2026, Author*`.
+    """
+    cleaned = text.strip()
+    for marker in ("**", "__", "*", "_", "`"):
+        if cleaned.startswith(marker) and cleaned.endswith(marker) and len(cleaned) >= len(marker) * 2:
+            cleaned = cleaned[len(marker):-len(marker)].strip()
+    return cleaned
+
+
+def _extract_summary_identity_line(one_pager: str) -> str | None:
+    for line in one_pager.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("- ", "+ ", "* ", ">")):
+            continue
+
+        cleaned = _strip_inline_markdown(stripped)
+        if re.search(r"\b(?:19|20)\d{2}\b", cleaned) or "arxiv" in cleaned.lower():
+            return cleaned
+
+    return None
+
+
+def _extract_title_from_identity(identity_line: str | None) -> str:
+    if not identity_line:
+        return ""
+
+    year_match = re.search(r"\b(?:19|20)\d{2}\b", identity_line)
+    if year_match is not None:
+        title_end = identity_line.rfind(",", 0, year_match.start())
+        if title_end != -1:
+            return identity_line[:title_end].strip(" -*_`")
+
+    return identity_line.strip(" -*_`")
+
+
+def _extract_authors_from_identity(identity_line: str | None) -> list[str]:
+    if not identity_line:
+        return []
+
+    year_match = re.search(r"\b(?:19|20)\d{2}\b", identity_line)
+    if year_match is None:
+        return []
+
+    author_blob = identity_line[year_match.end():]
+    if ")" in author_blob:
+        author_blob = author_blob.split(")", 1)[1]
+    author_blob = author_blob.lstrip(" ,;-")
+
+    authors: list[str] = []
+    for author in author_blob.split(","):
+        cleaned = author.strip()
+        if cleaned:
+            authors.append(cleaned)
+    return authors
+
+
+def _extract_year_from_identity(identity_line: str | None) -> datetime | None:
+    if not identity_line:
+        return None
+
+    match = re.search(r"\b((?:19|20)\d{2})\b", identity_line)
+    if match is None:
+        return None
+
+    return datetime(int(match.group(1)), 1, 1, tzinfo=timezone.utc)
+
+
+def _extract_summary_abstract(one_pager: str, identity_line: str | None) -> str:
+    lines = one_pager.splitlines()
+    identity_idx = -1
+    if identity_line:
+        for idx, line in enumerate(lines):
+            if _strip_inline_markdown(line.strip()) == identity_line:
+                identity_idx = idx
+                break
+
+    start_idx = identity_idx + 1 if identity_idx != -1 else 0
+    paragraph: list[str] = []
+    for line in lines[start_idx:]:
+        stripped = line.strip()
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if stripped.startswith(("- ", "+ ", "* ", ">")) or stripped.startswith("#"):
+            if paragraph:
+                break
+            continue
+        paragraph.append(stripped)
+
+    return " ".join(paragraph)
 
 
 def _build_import_paper(

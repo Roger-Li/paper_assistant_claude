@@ -8,20 +8,17 @@ from urllib.parse import urlparse
 
 import httpx
 
+from paper_assistant.arxiv import parse_arxiv_url
 from paper_assistant.models import PaperMetadata, SourceType
-
-# Reuse arXiv URL patterns for detection
-_ARXIV_URL_RE = re.compile(
-    r"(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/\d{4}\.\d{4,5}"
-)
-_BARE_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(?:v\d+)?$")
 
 
 def is_arxiv_url(url: str) -> bool:
-    """Return True if *url* looks like an arXiv URL or bare arXiv ID."""
-    return bool(_ARXIV_URL_RE.match(url.strip())) or bool(
-        _BARE_ARXIV_ID_RE.match(url.strip())
-    )
+    """Return True if *url* resolves to an arXiv paper identifier."""
+    try:
+        parse_arxiv_url(url)
+    except ValueError:
+        return False
+    return True
 
 
 def slugify_url(url: str, max_length: int = 80) -> str:

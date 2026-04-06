@@ -4,7 +4,7 @@ AI-powered ML research paper summarizer with podcast generation and Notion sync.
 
 ## Overview
 
-Paper Assistant takes an arXiv URL, any web article URL, or a local markdown-backed note, generates or stores a structured markdown summary, optionally creates narrated audio, and maintains a local podcast feed.
+Paper Assistant takes an arXiv ID, an arXiv or Hugging Face paper URL, any web article URL, or a local markdown-backed note, generates or stores a structured markdown summary, optionally creates narrated audio, and maintains a local podcast feed.
 
 It can also sync papers to a Notion database (manual two-way sync for summary/tags/reading status) so pages are easy to share and listen to across devices.
 
@@ -93,9 +93,9 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 
 | Command | Description |
 |---|---|
-| `paper-assist add <url>` | Full pipeline: fetch -> summarize -> audio -> feed (arXiv or web URL) |
-| `paper-assist import <url>` | Import pre-written markdown summary (arXiv or web URL, optional `--model`) |
-| `paper-assist skill-import <url>` | Agent-oriented import with deterministic provenance, cleanup, and JSON output |
+| `paper-assist add <url-or-id>` | Full pipeline: fetch -> summarize -> audio -> feed (arXiv ID, arXiv/HF paper URL, or web URL) |
+| `paper-assist import <url-or-id>` | Import pre-written markdown summary (arXiv ID, arXiv/HF paper URL, or web URL, optional `--model`) |
+| `paper-assist skill-import <url-or-id>` | Agent-oriented import with deterministic provenance, cleanup, and JSON output |
 | `paper-assist extract-text <pdf-path>` | Extract PDF text to markdown for skill fallback workflows |
 | `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark |
 | `paper-assist list` | List papers (`--status`, `--tag`) |
@@ -112,14 +112,16 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 
 ```bash
 # arXiv paper
+paper-assist add 2503.10291 -t multimodal -t rl
 paper-assist add https://arxiv.org/abs/2503.10291 -t multimodal -t rl
+paper-assist add https://huggingface.co/papers/2503.10291 -t multimodal -t rl
 
 # Web article (blog post, technical article, etc.)
 paper-assist add https://thinkingmachines.ai/blog/on-policy-distillation/ -t distillation
 ```
 
 Useful flags:
-- `--native-pdf`: send raw PDF to Claude instead of extracted text (arXiv only)
+- `--native-pdf`: when PDF fallback is needed, send raw PDF to Claude instead of extracted text (arXiv only)
 - `--skip-audio`: skip TTS generation
 - `--force`: re-process if already present
 
@@ -187,7 +189,7 @@ The skill-based workflow automates the manual loop of reading a paper, generatin
 ```
 
 The installer symlinks the in-repo Codex skill into `~/.codex/skills/` and prints the Claude Code permission entries needed for:
-- `hf papers read` (primary paper fetch)
+- `hf papers info` + `hf papers read` (metadata + primary paper fetch)
 - `curl` PDF download (fallback)
 - `paper-assist skill-import`
 - `paper-assist extract-text`
@@ -201,7 +203,8 @@ Use:
 /summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--force]
 ```
 
-The command fetches the paper via `hf papers read` (falling back to PDF download), reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
+The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
+Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval.
 
 ### Codex
 
@@ -211,7 +214,7 @@ Ask:
 Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
 ```
 
-The in-repo `skills/codex/summarize-paper/SKILL.md` follows the same prompt asset and import path, but stamps provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
+You can also pass just `2503.10291` or an HF paper URL like `https://huggingface.co/papers/2503.10291`. The in-repo `skills/codex/summarize-paper/SKILL.md` normalizes any accepted form to the arXiv ID, uses the Hugging Face paper route by default for retrieval, and then imports via the canonical arXiv abs URL while stamping provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
 
 Both skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxiv_id>/` instead of hardcoded `/tmp/...` paths. That keeps the intermediate PDF/markdown/summary files visible while the workflow is running, and `skill-import` can clean them up safely afterward because `.artifacts/` is an allowed cleanup root.
 

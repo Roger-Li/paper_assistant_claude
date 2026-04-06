@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -9,6 +11,8 @@ from pydantic import BaseModel, Field
 
 from paper_assistant.config import Config
 from paper_assistant.storage import StorageManager
+
+logger = logging.getLogger(__name__)
 
 
 class ImportRequest(BaseModel):
@@ -144,7 +148,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.post("/api/add")
     async def api_add_paper(url: str, skip_audio: bool = False, tags: list[str] | None = None):
         """API endpoint to add a paper or web article (triggers the full pipeline)."""
-        from paper_assistant.models import Paper, ProcessingStatus, SourceType
+        from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.podcast import generate_feed
         from paper_assistant.storage import make_audio_filename
         from paper_assistant.tts import prepare_text_for_tts, text_to_speech
@@ -201,7 +205,15 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
 
     async def _api_add_arxiv(url: str, skip_audio: bool, tags: list[str] | None):
         """Internal: add an arXiv paper via the full pipeline."""
-        from paper_assistant.arxiv import download_pdf, fetch_metadata, parse_arxiv_url
+        from paper_assistant.arxiv import (
+            download_pdf,
+            fetch_metadata as fetch_arxiv_metadata,
+            parse_arxiv_url,
+        )
+        from paper_assistant.hf_papers import (
+            fetch_markdown_body as fetch_hf_markdown_body,
+            fetch_metadata as fetch_hf_metadata,
+        )
         from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.pdf import extract_text_from_pdf
         from paper_assistant.podcast import generate_feed
@@ -218,18 +230,27 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": f"Paper {arxiv_id} already exists", "paper_id": arxiv_id}
 
         try:
-            metadata = await fetch_metadata(arxiv_id, config=config)
+            try:
+                metadata = await fetch_hf_metadata(arxiv_id, config=config)
+            except Exception as exc:
+                logger.warning("HF metadata unavailable for %s in WebUI add flow: %s", arxiv_id, exc)
+                metadata = await fetch_arxiv_metadata(arxiv_id, config=config)
 
             paper = Paper(metadata=metadata, status=ProcessingStatus.PENDING, tags=tags or [])
             storage.add_paper(paper)
 
-            pdf_path = config.pdfs_dir / make_pdf_filename(arxiv_id)
-            await download_pdf(arxiv_id, pdf_path, config=config)
-            paper.pdf_path = f"pdfs/{make_pdf_filename(arxiv_id)}"
+            try:
+                paper_text = await fetch_hf_markdown_body(arxiv_id, config=config)
+            except Exception as exc:
+                logger.warning("HF markdown unavailable for %s in WebUI add flow: %s", arxiv_id, exc)
+                pdf_path = config.pdfs_dir / make_pdf_filename(arxiv_id)
+                await download_pdf(arxiv_id, pdf_path, config=config)
+                paper.pdf_path = f"pdfs/{make_pdf_filename(arxiv_id)}"
+                paper_text = extract_text_from_pdf(pdf_path)
+
             paper.status = ProcessingStatus.FETCHED
             storage.add_paper(paper)
 
-            paper_text = extract_text_from_pdf(pdf_path)
             result = await summarize_paper_text(config, metadata, paper_text)
             summary_content = format_summary_file(metadata, result)
             storage.save_summary(arxiv_id, summary_content)
@@ -264,76 +285,27 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.post("/api/import")
     async def api_import_paper(req: ImportRequest):
         """API endpoint to import a pre-generated summary."""
-        from paper_assistant.web_article import is_arxiv_url
-
-        if is_arxiv_url(req.url):
-            return await _api_import_arxiv(req)
-
-        # Web article import
-        from paper_assistant.models import Paper, ProcessingStatus
-        from paper_assistant.podcast import generate_feed
-        from paper_assistant.storage import make_audio_filename
-        from paper_assistant.summarizer import (
-            SummarizationResult,
-            find_one_pager,
-            format_summary_file,
-            parse_summary_sections,
-        )
-        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
-        from paper_assistant.web_article import fetch_article
+        from paper_assistant.pipeline import DuplicatePaperError, import_paper_summary
 
         try:
-            metadata, _body = await fetch_article(req.url)
-            paper_id = metadata.paper_id
-
-            if storage.paper_exists(paper_id):
-                return {"error": f"Article {paper_id} already exists", "paper_id": paper_id}
-
-            sections = parse_summary_sections(req.markdown)
-            one_pager = find_one_pager(sections)
-            result = SummarizationResult(
-                full_markdown=req.markdown,
-                one_pager=one_pager,
-                sections=sections,
-                model_used="manual",
-            )
-
-            paper = Paper(
-                metadata=metadata,
-                status=ProcessingStatus.PENDING,
-                model_used="manual",
+            result = await import_paper_summary(
+                config=config,
+                storage=storage,
+                url=req.url,
+                markdown=req.markdown,
+                model="manual",
                 tags=req.tags,
+                skip_audio=req.skip_audio,
             )
-            storage.add_paper(paper)
-
-            summary_content = format_summary_file(metadata, result)
-            storage.save_summary(paper_id, summary_content)
-            paper = storage.get_paper(paper_id)
-
-            if not req.skip_audio:
-                tts_text = prepare_text_for_tts(
-                    req.markdown, metadata.title, metadata.authors,
-                    source_label=metadata.source_label,
-                )
-                audio_path = config.audio_dir / make_audio_filename(paper_id)
-                await text_to_speech(
-                    tts_text, audio_path, config.tts_voice, config.tts_rate
-                )
-                paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-
-            paper.status = ProcessingStatus.COMPLETE
-            storage.add_paper(paper)
-
-            all_papers = storage.list_papers()
-            generate_feed(config, all_papers)
-
-            return {
-                "status": "ok",
-                "paper_id": paper_id,
-                "title": metadata.title,
-            }
+        except DuplicatePaperError as e:
+            return {"error": str(e), "paper_id": e.paper_id}
         except Exception as e:
             return {"error": str(e)}
+
+        response = {"status": "ok", "paper_id": result.paper_id, "title": result.title}
+        if result.warnings:
+            response["warnings"] = result.warnings
+        return response
 
     @router.post("/api/create")
     async def api_create_note(req: CreateRequest):
@@ -361,76 +333,6 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         if outcome.warnings:
             response["warnings"] = outcome.warnings
         return response
-
-    async def _api_import_arxiv(req: ImportRequest):
-        """Internal: import an arXiv paper with a pre-generated summary."""
-        from paper_assistant.arxiv import fetch_metadata, parse_arxiv_url
-        from paper_assistant.models import Paper, ProcessingStatus
-        from paper_assistant.podcast import generate_feed
-        from paper_assistant.storage import make_audio_filename
-        from paper_assistant.summarizer import (
-            SummarizationResult,
-            find_one_pager,
-            format_summary_file,
-            parse_summary_sections,
-        )
-        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
-
-        try:
-            arxiv_id = parse_arxiv_url(req.url)
-        except ValueError as e:
-            return {"error": str(e)}
-
-        if storage.paper_exists(arxiv_id):
-            return {"error": f"Paper {arxiv_id} already exists", "paper_id": arxiv_id}
-
-        try:
-            metadata = await fetch_metadata(arxiv_id, config=config)
-
-            sections = parse_summary_sections(req.markdown)
-            one_pager = find_one_pager(sections)
-            result = SummarizationResult(
-                full_markdown=req.markdown,
-                one_pager=one_pager,
-                sections=sections,
-                model_used="manual",
-            )
-
-            paper = Paper(
-                metadata=metadata,
-                status=ProcessingStatus.PENDING,
-                model_used="manual",
-                tags=req.tags,
-            )
-            storage.add_paper(paper)
-
-            summary_content = format_summary_file(metadata, result)
-            storage.save_summary(arxiv_id, summary_content)
-            paper = storage.get_paper(arxiv_id)
-
-            if not req.skip_audio:
-                tts_text = prepare_text_for_tts(
-                    req.markdown, metadata.title, metadata.authors
-                )
-                audio_path = config.audio_dir / make_audio_filename(arxiv_id)
-                await text_to_speech(
-                    tts_text, audio_path, config.tts_voice, config.tts_rate
-                )
-                paper.audio_path = f"audio/{make_audio_filename(arxiv_id)}"
-
-            paper.status = ProcessingStatus.COMPLETE
-            storage.add_paper(paper)
-
-            all_papers = storage.list_papers()
-            generate_feed(config, all_papers)
-
-            return {
-                "status": "ok",
-                "paper_id": arxiv_id,
-                "title": metadata.title,
-            }
-        except Exception as e:
-            return {"error": str(e)}
 
     @router.post("/api/paper/{paper_id:path}/tags")
     async def api_add_tags(paper_id: str, req: TagsRequest):

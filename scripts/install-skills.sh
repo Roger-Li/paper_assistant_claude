@@ -14,6 +14,7 @@ cat <<'GUIDE'
 Claude Code setup — add these to .claude/settings.local.json
 under permissions.allow:
 
+  "Bash(hf papers info *)"
   "Bash(hf papers read *)"
   "Bash(curl -sL -o .artifacts/summarize-paper/*)"
   "Bash(.venv/bin/paper-assist skill-import *)"

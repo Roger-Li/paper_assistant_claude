@@ -2,15 +2,21 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
 
 ## Workflow
 
-1. Parse `$ARGUMENTS` for URL, tags, and flags.
+1. Parse `$ARGUMENTS` for a bare arXiv ID, a full arXiv URL, or a Hugging Face paper URL, plus tags and flags.
+   Normalize any accepted input form to the canonical arXiv ID `<id>` immediately and use that ID for the rest of the workflow.
    Tags must be passed as repeated flags, e.g. `--tags rl --tags agent`.
    Default to syncing Notion unless the user explicitly passes `--no-sync-notion`.
 2. Read summary instructions from `prompts/paper_summary_instructions.md`.
 3. Unless `--no-sync-notion` is present, run `.venv/bin/paper-assist notion-preflight`
    before the paper workflow. If preflight fails, stop immediately and report it.
-4. Extract the arXiv ID from the URL and create a repo-local artifact directory:
+4. Create a repo-local artifact directory for the normalized arXiv ID:
    `.artifacts/summarize-paper/<id>/`
-5. Fetch the paper content using `hf papers read <id>` (HuggingFace CLI).
+5. Use the Hugging Face paper route as the default retrieval path.
+   First fetch metadata using `hf papers info <id>`:
+   `hf papers info <id>`
+   Use that output for title/authors/abstract context when needed.
+   Do not infer metadata from the markdown wrapper returned by `hf papers read`.
+   Then fetch the paper content using `hf papers read <id>` (Hugging Face CLI).
    Redirect stdout to a file to avoid shell output truncation on long papers:
    `hf papers read <id> > .artifacts/summarize-paper/<id>/paper.md`
    Then read `.artifacts/summarize-paper/<id>/paper.md` as the paper content.
@@ -38,7 +44,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
      [--cleanup-file .artifacts/summarize-paper/<id>/paper.pdf] \
      --json`
    Always pass the arXiv URL (`https://arxiv.org/abs/<id>`) to `skill-import`,
-   not the original HuggingFace or other URL, so that the paper_id resolves to
+   not the original Hugging Face or other URL, so that the paper_id resolves to
    the arXiv ID.
    Omit `--sync-notion` only when the user explicitly passed `--no-sync-notion`.
    `paper.md` is always created (by `hf papers read` or `extract-text`).
@@ -47,6 +53,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
 
 ## Error Handling
 
+- `hf papers info` failure: continue if `hf papers read` still works, but do not infer metadata from the read-wrapper; runtime import resolves metadata separately
 - `hf papers read` failure: fall back to PDF download + native read + extract-text
 - `curl` failure (in fallback path): retry once, then report error and stop
 - PDF read failure: fall back to `extract-text --output`

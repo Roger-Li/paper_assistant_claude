@@ -1,0 +1,18 @@
+{
+  "id": "2603.19835",
+  "authors": [
+    {"name": "Chiyu Ma"},
+    {"name": "Shuo Yang"},
+    {"name": "Kexin Huang"},
+    {"name": "Jinda Lu"},
+    {"name": "Haoming Meng"},
+    {"name": "Shangshang Wang"},
+    {"name": "Bolin Ding"},
+    {"name": "Soroush Vosoughi"},
+    {"name": "Guoyin Wang"},
+    {"name": "Jingren Zhou"}
+  ],
+  "publishedAt": "2026-03-20T10:24:50.000Z",
+  "title": "FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization",
+  "summary": "We present Future-KL Influenced Policy Optimization (FIPO), a reinforcement learning algorithm designed to overcome reasoning bottlenecks in large language models. While GRPO style training scales effectively, it typically relies on outcome-based rewards (ORM) that distribute a global advantage uniformly across every token in a trajectory. We argue that this coarse-grained credit assignment imposes a performance ceiling by failing to distinguish critical logical pivots from trivial tokens. FIPO addresses this by incorporating discounted future-KL divergence into the policy update, creating a dense advantage formulation that re-weights tokens based on their influence on subsequent trajectory behavior. Empirically, FIPO enables models to break through the length stagnation seen in standard baselines."
+}

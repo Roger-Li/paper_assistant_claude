@@ -8,14 +8,17 @@ from pathlib import Path
 import shutil
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
+from paper_assistant.arxiv import ArxivRateLimitError, PaperNotFoundError
 from paper_assistant.cli import _normalize_skill_markdown, main
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus
 from paper_assistant.pipeline import DuplicatePaperError, ImportResult, import_paper_summary
 from paper_assistant.storage import StorageManager
+from tests.helpers import load_hf_metadata_fixture
 
 
 @pytest.fixture
@@ -71,14 +74,12 @@ def _existing_paper(metadata: PaperMetadata) -> Paper:
 
 async def _write_audio(_text: str, output_path: Path, _voice: str, _rate: str) -> None:
     output_path.write_bytes(b"fake-audio")
-
-
 @pytest.mark.asyncio
 async def test_import_happy_path(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.text_to_speech", new=AsyncMock(side_effect=_write_audio)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
@@ -103,11 +104,168 @@ async def test_import_happy_path(config, storage):
 
 
 @pytest.mark.asyncio
+async def test_import_prefers_hf_metadata_before_arxiv(config, storage):
+    metadata = load_hf_metadata_fixture("2601.15621")
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_arxiv_metadata", new=AsyncMock()) as fetch_arxiv,
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nImported body",
+            model="claude-code",
+            skip_audio=True,
+        )
+
+    assert result.paper_id == "2601.15621"
+    assert result.title == "Qwen3-TTS Technical Report"
+    fetch_arxiv.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_import_falls_back_to_arxiv_metadata_when_hf_fails(config, storage):
+    metadata = load_hf_metadata_fixture("2503.10291")
+
+    with (
+        patch(
+            "paper_assistant.pipeline.fetch_hf_metadata",
+            new=AsyncMock(side_effect=RuntimeError("hf down")),
+        ),
+        patch(
+            "paper_assistant.pipeline.fetch_arxiv_metadata",
+            new=AsyncMock(return_value=metadata),
+        ) as fetch_arxiv,
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nImported body",
+            model="claude-code",
+            skip_audio=True,
+        )
+
+    paper = storage.get_paper("2503.10291")
+    assert paper is not None
+    assert result.title == "VisualPRM: An Effective Process Reward Model for Multimodal Reasoning"
+    fetch_arxiv.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_import_falls_back_to_summary_derived_metadata(config, storage):
+    markdown = (
+        "# One-Pager\n\n"
+        "*Fallback Paper, arXiv preprint (2026), Alice Example, Bob Example*\n\n"
+        "This summary paragraph is enough to populate a fallback abstract.\n"
+    )
+
+    with (
+        patch(
+            "paper_assistant.pipeline.fetch_hf_metadata",
+            new=AsyncMock(side_effect=httpx.ReadTimeout("hf down")),
+        ),
+        patch(
+            "paper_assistant.pipeline.fetch_arxiv_metadata",
+            new=AsyncMock(side_effect=ArxivRateLimitError(attempts=3, retry_after_seconds=45)),
+        ),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url="https://arxiv.org/abs/2603.19835",
+            markdown=markdown,
+            model="claude-code",
+            skip_audio=True,
+        )
+
+    paper = storage.get_paper("2603.19835")
+    assert paper is not None
+    assert result.paper_id == "2603.19835"
+    assert result.title == "Fallback Paper"
+    assert paper.metadata.authors == ["Alice Example", "Bob Example"]
+    assert paper.metadata.abstract == "This summary paragraph is enough to populate a fallback abstract."
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_guess_metadata_when_paper_is_missing(config, storage):
+    request = httpx.Request("GET", "https://huggingface.co/api/papers/9999.99999")
+    response = httpx.Response(404, request=request)
+    hf_404 = httpx.HTTPStatusError("not found", request=request, response=response)
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(side_effect=hf_404)),
+        patch(
+            "paper_assistant.pipeline.fetch_arxiv_metadata",
+            new=AsyncMock(side_effect=PaperNotFoundError("No paper found for arXiv ID: 9999.99999")),
+        ),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+    ):
+        with pytest.raises(PaperNotFoundError):
+            await import_paper_summary(
+                config=config,
+                storage=storage,
+                url="9999.99999",
+                markdown="# One-Pager\nGuessed body",
+                model="claude-code",
+                skip_audio=True,
+            )
+
+    assert storage.get_paper("9999.99999") is None
+
+
+@pytest.mark.asyncio
+async def test_import_force_reuses_existing_metadata_on_transient_remote_failures(config, storage):
+    metadata = load_hf_metadata_fixture("2601.15621")
+    existing = _existing_paper(metadata)
+    storage.add_paper(existing)
+
+    markdown = (
+        "# One-Pager\n\n"
+        "*Completely Different Guess, arXiv preprint (2026), Wrong Author*\n\n"
+        "This should never replace the verified metadata.\n"
+    )
+
+    with (
+        patch(
+            "paper_assistant.pipeline.fetch_hf_metadata",
+            new=AsyncMock(side_effect=httpx.ReadTimeout("hf timeout")),
+        ),
+        patch(
+            "paper_assistant.pipeline.fetch_arxiv_metadata",
+            new=AsyncMock(side_effect=ArxivRateLimitError(attempts=3, retry_after_seconds=45)),
+        ),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url="https://huggingface.co/papers/2601.15621",
+            markdown=markdown,
+            model="claude-code",
+            skip_audio=True,
+            force=True,
+        )
+
+    paper = storage.get_paper("2601.15621")
+    assert paper is not None
+    assert result.title == metadata.title
+    assert paper.metadata.title == metadata.title
+    assert paper.metadata.authors == metadata.authors
+    assert paper.metadata.abstract == metadata.abstract
+
+
+@pytest.mark.asyncio
 async def test_import_model_provenance(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         await import_paper_summary(
@@ -129,7 +287,7 @@ async def test_import_model_with_version(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         await import_paper_summary(
@@ -154,7 +312,7 @@ async def test_import_refetch_after_save(config, storage):
         assert paper.summary_path is not None
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch(
             "paper_assistant.pipeline._generate_audio_for_import",
             new=AsyncMock(side_effect=assert_refetched),
@@ -175,7 +333,7 @@ async def test_import_duplicate_no_force(config, storage):
     metadata = _metadata()
     storage.add_paper(_existing_paper(metadata))
 
-    with patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)):
+    with patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)):
         with pytest.raises(DuplicatePaperError):
             await import_paper_summary(
                 config=config,
@@ -193,7 +351,7 @@ async def test_import_duplicate_with_force(config, storage):
     storage.add_paper(existing)
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         result = await import_paper_summary(
@@ -226,7 +384,7 @@ async def test_force_merge_tags_union(config, storage):
     storage.add_paper(_existing_paper(metadata))
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         await import_paper_summary(
@@ -252,7 +410,7 @@ async def test_force_merge_audio_keep_on_skip(config, storage):
     storage.add_paper(existing)
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         text_to_speech = AsyncMock()
@@ -281,7 +439,7 @@ async def test_force_merge_audio_replace(config, storage):
     storage.add_paper(existing)
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.text_to_speech", new=AsyncMock(side_effect=_write_audio)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
@@ -305,7 +463,7 @@ async def test_import_sync_notion_called(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
         patch("paper_assistant.pipeline.run_notion_sync", new=AsyncMock()) as sync_notion,
     ):
@@ -329,7 +487,7 @@ async def test_import_sync_notion_skipped(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
         patch("paper_assistant.pipeline.run_notion_sync", new=AsyncMock()) as sync_notion,
     ):
@@ -353,7 +511,7 @@ async def test_import_notion_failure_nonfatal(config, storage):
     metadata = _metadata()
 
     with (
-        patch("paper_assistant.pipeline.fetch_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
         patch(
             "paper_assistant.pipeline.run_notion_sync",

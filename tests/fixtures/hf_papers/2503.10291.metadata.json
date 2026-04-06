@@ -1,0 +1,23 @@
+{
+  "id": "2503.10291",
+  "authors": [
+    {"name": "Weiyun Wang"},
+    {"name": "Zhangwei Gao"},
+    {"name": "Lianjie Chen"},
+    {"name": "Zhe Chen"},
+    {"name": "Jinguo Zhu"},
+    {"name": "Xiangyu Zhao"},
+    {"name": "Yangzhou Liu"},
+    {"name": "Yue Cao"},
+    {"name": "Shenglong Ye"},
+    {"name": "Xizhou Zhu"},
+    {"name": "Lewei Lu"},
+    {"name": "Haodong Duan"},
+    {"name": "Yu Qiao"},
+    {"name": "Jifeng Dai"},
+    {"name": "Wenhai Wang"}
+  ],
+  "publishedAt": "2025-03-13T12:03:37.000Z",
+  "title": "VisualPRM: An Effective Process Reward Model for Multimodal Reasoning",
+  "summary": "We introduce VisualPRM, an advanced multimodal Process Reward Model (PRM) with 8B parameters, which improves the reasoning abilities of existing Multimodal Large Language Models (MLLMs) across different model scales and families with Best-of-N (BoN) evaluation strategies. Specifically, our model improves the reasoning performance of three types of MLLMs and four different model scales. Even when applied to the highly capable InternVL2.5-78B, it achieves a 5.9-point improvement across seven multimodal reasoning benchmarks. Experimental results show that our model exhibits superior performance compared to Outcome Reward Models and Self-Consistency during BoN evaluation."
+}

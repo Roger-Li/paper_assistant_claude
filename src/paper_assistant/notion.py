@@ -1457,7 +1457,8 @@ async def _import_remote_only(
     dry_run: bool,
     sync_time: datetime,
 ) -> None:
-    from paper_assistant.arxiv import fetch_metadata
+    from paper_assistant.arxiv import fetch_metadata as fetch_arxiv_metadata
+    from paper_assistant.hf_papers import fetch_metadata as fetch_hf_metadata
 
     rid = remote.paper_id
     if not rid:
@@ -1471,9 +1472,12 @@ async def _import_remote_only(
         return
 
     if remote.arxiv_id:
-        # arXiv paper — fetch full metadata from arXiv API
+        # arXiv paper — prefer HF paper-page metadata, then fall back to arXiv.
         try:
-            metadata = await fetch_metadata(remote.arxiv_id, config=config)
+            try:
+                metadata = await fetch_hf_metadata(remote.arxiv_id, config=config)
+            except Exception:
+                metadata = await fetch_arxiv_metadata(remote.arxiv_id, config=config)
         except Exception as exc:  # pragma: no cover - exercised via integration
             report.errors.append(f"Failed to fetch metadata for {remote.arxiv_id}: {exc}")
             report.skipped += 1

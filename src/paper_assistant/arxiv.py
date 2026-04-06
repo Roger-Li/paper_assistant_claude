@@ -32,6 +32,9 @@ DEFAULT_ARXIV_BACKOFF_CAP_SECONDS = 90.0
 ARXIV_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$"
 )
+HF_PAPER_PATTERN = re.compile(
+    r"(?:https?://)?(?:(?:www\.)?huggingface\.co|hf\.co)/papers/(\d{4}\.\d{4,5})(?:v\d+)?/?$"
+)
 BARE_ID_PATTERN = re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?$")
 
 # arXiv Atom XML namespaces
@@ -64,6 +67,7 @@ def parse_arxiv_url(url: str) -> str:
     Supports:
       - https://arxiv.org/abs/2503.10291
       - https://arxiv.org/pdf/2503.10291
+      - https://huggingface.co/papers/2503.10291
       - https://arxiv.org/abs/2503.10291v2
       - 2503.10291
 
@@ -85,9 +89,15 @@ def parse_arxiv_url(url: str) -> str:
     if match:
         return match.group(1)
 
+    # Try Hugging Face paper page URL
+    match = HF_PAPER_PATTERN.match(url)
+    if match:
+        return match.group(1)
+
     raise ValueError(
         f"Invalid arXiv URL or ID: {url!r}. "
-        "Expected format: https://arxiv.org/abs/XXXX.XXXXX or a bare arXiv ID."
+        "Expected format: https://arxiv.org/abs/XXXX.XXXXX, "
+        "https://huggingface.co/papers/XXXX.XXXXX, or a bare arXiv ID."
     )
 
 
