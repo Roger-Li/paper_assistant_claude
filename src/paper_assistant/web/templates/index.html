@@ -3,10 +3,10 @@
 {% block title %}Papers — Paper Assistant{% endblock %}
 
 {% block content %}
-<h1>Papers</h1>
+<h1 class="page-title">Papers</h1>
 
 <!-- Add paper form -->
-<details>
+<details class="action-panel">
     <summary>Add a new paper or article</summary>
     <form id="add-form">
         <input type="text" name="url" placeholder="2603.19835, an arXiv/HF paper URL, or any article URL" required>
@@ -17,7 +17,7 @@
 </details>
 
 <!-- Import pre-generated summary -->
-<details>
+<details class="action-panel">
     <summary>Import a pre-generated summary</summary>
     <form id="import-form">
         <label for="import-url">URL or arXiv ID</label>
@@ -32,7 +32,7 @@
 </details>
 
 <!-- Create local note -->
-<details>
+<details class="action-panel">
     <summary>Add a local article / note</summary>
     <form id="create-form">
         <label for="create-title">Title</label>
@@ -49,7 +49,7 @@
 </details>
 
 <!-- Notion sync controls -->
-<details>
+<details class="action-panel">
     <summary>Sync with Notion</summary>
     <form id="notion-sync-form">
         <label for="notion-sync-paper">Paper filter (optional)</label>
@@ -76,15 +76,17 @@
 
 <!-- Tag filter -->
 {% if all_tags %}
-<p>
-    <strong>Filter by tag:</strong>
+<div class="filter-bar">
+<p class="filter-row">
+    <strong>Tags</strong>
     <a href="{{ filter_url('tag', '') }}" {% if not active_tag %}class="contrast"{% endif %}>All</a>
     {% for tag in all_tags %}
     &middot; <a href="{{ filter_url('tag', tag) }}" {% if active_tag == tag %}class="contrast"{% endif %}>{{ tag }}</a>
     {% endfor %}
 </p>
+</div>
 
-<details>
+<details class="action-panel">
     <summary>Bulk edit tags</summary>
     <p><small>Apply local tag renames to every paper. Use one change per line in the form <code>old =&gt; new</code>. If the target tag already exists on a paper, the tags are merged automatically.</small></p>
     <form id="rename-tags-form">
@@ -96,28 +98,27 @@
 </details>
 {% endif %}
 
-<!-- Processing status filter -->
-<p>
-    <strong>Status:</strong>
+<!-- Filters & Sort -->
+<div class="filter-bar">
+<p class="filter-row">
+    <strong>Status</strong>
     <a href="{{ filter_url('status', '') }}" {% if not active_status %}class="contrast"{% endif %}>All</a>
     {% for s in all_statuses %}
     &middot; <a href="{{ filter_url('status', s) }}" {% if active_status == s %}class="contrast"{% endif %}>{{ s }}</a>
     {% endfor %}
 </p>
 
-<!-- Reading status filter -->
-<p>
-    <strong>Reading:</strong>
+<p class="filter-row">
+    <strong>Reading</strong>
     <a href="{{ filter_url('reading_status', '') }}" {% if not active_reading_status %}class="contrast"{% endif %}>All</a>
     {% for rs in all_reading_statuses %}
     &middot; <a href="{{ filter_url('reading_status', rs) }}" {% if active_reading_status == rs %}class="contrast"{% endif %}>{{ rs | capitalize }}</a>
     {% endfor %}
 </p>
 
-<!-- Sort controls -->
 {% if papers or active_sort != "date_added" %}
-<p>
-    <strong>Sort by:</strong>
+<p class="filter-row">
+    <strong>Sort</strong>
     {% for s, label, default_ord in [("date_added", "Date Added", "desc"), ("title", "Title", "asc"), ("tag", "Tag", "asc"), ("arxiv_id", "ID", "asc")] %}
     {% if s == active_sort %}
         {% set next_ord = "asc" if active_order == "desc" else "desc" %}
@@ -134,11 +135,12 @@
     {% endfor %}
 </p>
 {% endif %}
+</div>
 
 <!-- Paper list -->
 {% if papers %}
-<p><small>{{ total }} paper{{ 's' if total != 1 else '' }}</small></p>
-<table>
+<p class="paper-count">{{ total }} paper{{ 's' if total != 1 else '' }}</p>
+<table class="paper-table">
     <thead>
         <tr>
             <th>ID</th>
@@ -158,7 +160,7 @@
             <td><a href="/paper/{{ p.metadata.paper_id }}">{{ p.metadata.title[:60] }}{{ '...' if p.metadata.title|length > 60 else '' }}</a></td>
             <td>{{ p.tags | join(', ') }}</td>
             <td>{{ p.date_added.strftime('%Y-%m-%d') }}</td>
-            <td>{{ p.status.value }}</td>
+            <td><span class="status-badge status-{{ p.status.value }}">{{ p.status.value }}</span></td>
             <td>
                 <select class="reading-status-select" data-paper-id="{{ p.metadata.paper_id }}"
                         onchange="updateReadingStatus(this)">
@@ -174,15 +176,17 @@
                 —
                 {% endif %}
             </td>
-            <td><a href="#" onclick="deletePaper('{{ p.metadata.paper_id }}'); return false;" style="color: var(--pico-color-red-500, #dc3545); font-size: 0.8rem;">Delete</a></td>
+            <td><a href="#" onclick="deletePaper('{{ p.metadata.paper_id }}'); return false;" class="delete-link">Delete</a></td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
 {% else %}
+<div class="empty-state">
 <p>No papers yet. Add one using the form above or the CLI:</p>
 <pre><code>paper-assist add https://arxiv.org/abs/2503.10291
 paper-assist add https://example.com/blog/some-article</code></pre>
+</div>
 {% endif %}
 {% endblock %}
 

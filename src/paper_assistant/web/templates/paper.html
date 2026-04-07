@@ -32,10 +32,10 @@
 </hgroup>
 
 <!-- Metadata sidebar -->
-<div class="grid">
+<div class="grid metadata-card">
     <div>
         <small>
-            <strong>Status:</strong> {{ paper.status.value }}<br>
+            <strong>Status:</strong> <span class="status-badge status-{{ paper.status.value }}">{{ paper.status.value }}</span><br>
             <strong>Added:</strong> {{ paper.date_added.strftime('%Y-%m-%d %H:%M') }}<br>
             {% if paper.model_used %}<strong>Model:</strong> {{ paper.model_used }}<br>{% endif %}
             {% if paper.token_count %}<strong>Tokens:</strong> {{ paper.token_count }}<br>{% endif %}
@@ -62,11 +62,11 @@
 </div>
 
 <!-- Actions -->
-<div style="margin-bottom: 1rem;">
+<div class="action-bar">
     {% if paper.summary_path %}
-    <button id="edit-btn" class="outline" style="font-size: 0.85rem;" onclick="toggleEdit()">Edit Summary</button>
+    <button id="edit-btn" class="outline" onclick="toggleEdit()">Edit Summary</button>
     {% endif %}
-    <button id="delete-btn" class="secondary outline" style="font-size: 0.85rem;" onclick="deletePaper()">Delete this entry</button>
+    <button id="delete-btn" class="secondary outline" onclick="deletePaper()">Delete this entry</button>
 </div>
 
 <!-- Edit panel (hidden by default) -->

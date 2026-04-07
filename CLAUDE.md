@@ -79,6 +79,15 @@ For user-facing setup and usage, see [README.md](README.md).
 - Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`.
 - Artifacts live under `.artifacts/summarize-paper/` during skill runs.
 
+## Web UI / Frontend
+
+- CSS theme uses Pico CSS 2 as base + custom `style.css` with design tokens (`:root` variables prefixed `--pa-*`).
+- Fonts: Fraunces (display/headings, variable with SOFT/WONK axes) + Source Sans 3 (body/UI). Loaded via Google Fonts `@import` in `style.css`.
+- JS-critical selectors: all element IDs, `data-paper-id`, `onclick`/`onchange` handlers, `.reading-status-select`, `.tag-chip` (used in `renderTags()` JS), `.error` (injected via `innerHTML`), all `reader-*` classes. Do not rename or remove these.
+- Reader mode CSS is self-contained — avoid modifying `.reader-*` rules unless specifically requested.
+- Status badge classes follow `status-{value}` pattern matching `ProcessingStatus` enum values in `models.py`.
+- Editable install serves source static files directly; browser cache (`Cmd+Shift+R`) is the usual culprit when CSS changes don't appear.
+
 ## Agent Workflow
 
 When implementing changes:
