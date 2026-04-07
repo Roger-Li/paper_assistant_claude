@@ -247,6 +247,7 @@ class StorageManager:
         return {
             "renames": rename_reports,
             "papers_updated": len(changed_paper_ids),
+            "changed_paper_ids": list(changed_paper_ids),
         }
 
     def set_reading_status(

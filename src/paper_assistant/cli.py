@@ -103,6 +103,12 @@ async def _add_arxiv_paper(
         summarize_paper_text,
     )
     config = load_config(**obj)
+    if not config.anthropic_api_key:
+        console.print(
+            "[red]ANTHROPIC_API_KEY is required for summarization.[/red] "
+            "Set it in .env or as an environment variable."
+        )
+        return
     config.ensure_dirs()
     storage = StorageManager(config)
 
@@ -209,6 +215,16 @@ async def _add_arxiv_paper(
     if paper.audio_path and config.icloud_sync:
         _copy_to_icloud(config, paper, metadata.title, paper_id)
 
+    # Update search index
+    from paper_assistant.search import get_search_manager
+
+    search_mgr = get_search_manager(config)
+    if search_mgr:
+        try:
+            search_mgr.sync_paper(paper_id, storage)
+        except Exception:
+            console.print("[yellow]Warning: Search index update failed.[/yellow]")
+
     console.print()
     console.print("[green]Done![/green] Paper processed successfully.")
     console.print(f"  Summary: {summary_path}")
@@ -231,6 +247,12 @@ async def _add_web_article(
     from paper_assistant.web_article import fetch_article
 
     config = load_config(**obj)
+    if not config.anthropic_api_key:
+        console.print(
+            "[red]ANTHROPIC_API_KEY is required for summarization.[/red] "
+            "Set it in .env or as an environment variable."
+        )
+        return
     config.ensure_dirs()
     storage = StorageManager(config)
 
@@ -291,6 +313,16 @@ async def _add_web_article(
     # Copy audio to iCloud Drive
     if paper.audio_path and config.icloud_sync:
         _copy_to_icloud(config, paper, metadata.title, paper_id)
+
+    # Update search index
+    from paper_assistant.search import get_search_manager
+
+    search_mgr = get_search_manager(config)
+    if search_mgr:
+        try:
+            search_mgr.sync_paper(paper_id, storage)
+        except Exception:
+            console.print("[yellow]Warning: Search index update failed.[/yellow]")
 
     console.print()
     console.print("[green]Done![/green] Article processed successfully.")
@@ -949,6 +981,14 @@ def remove(ctx: click.Context, paper_id: str, keep_files: bool) -> None:
     storage = StorageManager(config)
 
     if storage.delete_paper(paper_id, delete_files=not keep_files):
+        from paper_assistant.search import get_search_manager
+
+        search_mgr = get_search_manager(config)
+        if search_mgr:
+            try:
+                search_mgr.delete_paper(paper_id)
+            except Exception:
+                console.print("[yellow]Warning: Search index update failed.[/yellow]")
         console.print(f"[green]Paper {paper_id} removed.[/green]")
     else:
         console.print(f"[red]Paper {paper_id} not found.[/red]")
@@ -992,6 +1032,150 @@ def regenerate_feed(ctx: click.Context) -> None:
     console.print(f"[green]Feed regenerated:[/green] {config.feed_path}")
 
 
+@main.command("search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, show_default=True, help="Maximum number of results.")
+@click.option(
+    "--mode",
+    type=click.Choice(["text", "vector", "hybrid"]),
+    default="text",
+    show_default=True,
+    help="Search mode: text (BM25), vector (semantic), or hybrid.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output results as JSON.")
+@click.pass_context
+def search(
+    ctx: click.Context,
+    query: str,
+    limit: int,
+    mode: str,
+    json_output: bool,
+) -> None:
+    """Search across paper summaries and metadata."""
+    from paper_assistant.config import load_config
+    from paper_assistant.search import EmbeddingsNotAvailableError, SearchManager
+
+    config = load_config(**ctx.obj)
+
+    if not config.qmd_enabled:
+        console.print(
+            "[red]Search requires qmd.[/red] Install it with "
+            "`bun install -g github:tobi/qmd` and set `PAPER_ASSIST_QMD_ENABLED=true`."
+        )
+        raise SystemExit(1)
+
+    mgr = SearchManager(config)
+    if not mgr.is_available():
+        console.print(
+            "[red]Search requires qmd.[/red] Install it with "
+            "`bun install -g github:tobi/qmd` and set `PAPER_ASSIST_QMD_ENABLED=true`."
+        )
+        raise SystemExit(1)
+
+    try:
+        results = mgr.search(query, limit=limit, mode=mode)
+    except EmbeddingsNotAvailableError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Search failed:[/red] {e}")
+        raise SystemExit(1)
+
+    if json_output:
+        import json as json_mod
+        click.echo(json_mod.dumps(
+            [{"paper_id": r.paper_id, "title": r.title, "score": r.score, "snippet": r.snippet} for r in results],
+            indent=2,
+        ))
+        return
+
+    if not results:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(title=f"Search: {query}")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Paper ID", style="cyan", no_wrap=True)
+    table.add_column("Title", max_width=50)
+    table.add_column("Score", justify="right", width=8)
+
+    for i, r in enumerate(results, 1):
+        table.add_row(str(i), r.paper_id, r.title or r.paper_id, f"{r.score:.2f}")
+
+    console.print(table)
+    console.print(f"\n[dim]{len(results)} result(s)[/dim]")
+
+
+@main.command("index-setup")
+@click.pass_context
+def index_setup(ctx: click.Context) -> None:
+    """Set up the qmd search index (idempotent)."""
+    from paper_assistant.config import load_config
+    from paper_assistant.search import SearchManager
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**ctx.obj)
+
+    if not config.qmd_enabled:
+        console.print(
+            "[red]Search requires qmd.[/red] Set `PAPER_ASSIST_QMD_ENABLED=true`."
+        )
+        raise SystemExit(1)
+
+    mgr = SearchManager(config)
+    if not mgr.is_available():
+        console.print(
+            "[red]qmd binary not found.[/red] Install it with "
+            "`bun install -g github:tobi/qmd`."
+        )
+        raise SystemExit(1)
+
+    console.print("[bold]Setting up search index...[/bold]")
+    mgr.setup()
+
+    storage = StorageManager(config)
+    console.print("Rebuilding search documents...")
+    mgr.rebuild_all(storage)
+
+    console.print("[green]Search index ready.[/green]")
+
+
+@main.command("index-rebuild")
+@click.option("--embed", is_flag=True, help="Also generate vector embeddings (slow).")
+@click.pass_context
+def index_rebuild(ctx: click.Context, embed: bool) -> None:
+    """Regenerate all search documents and update the index."""
+    from paper_assistant.config import load_config
+    from paper_assistant.search import SearchManager
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**ctx.obj)
+
+    if not config.qmd_enabled:
+        console.print(
+            "[red]Search requires qmd.[/red] Set `PAPER_ASSIST_QMD_ENABLED=true`."
+        )
+        raise SystemExit(1)
+
+    mgr = SearchManager(config)
+    if not mgr.is_available():
+        console.print(
+            "[red]qmd binary not found.[/red] Install it with "
+            "`bun install -g github:tobi/qmd`."
+        )
+        raise SystemExit(1)
+
+    storage = StorageManager(config)
+    console.print("[bold]Rebuilding search documents...[/bold]")
+    mgr.rebuild_all(storage)
+    console.print("[green]Search documents rebuilt.[/green]")
+
+    if embed:
+        console.print("[bold]Generating embeddings...[/bold] (this may take a while)")
+        mgr.generate_embeddings()
+        console.print("[green]Embeddings generated.[/green]")
+
+
 @main.command("notion-sync")
 @click.option("--paper", "paper_id", help="Sync only one paper by ID or Notion page ID.")
 @click.option("--dry-run", is_flag=True, help="Preview sync actions without writing changes.")
@@ -1024,6 +1208,16 @@ async def _notion_sync(obj: dict, paper_id: str | None, dry_run: bool) -> None:
     except Exception as e:
         console.print(f"[red]Notion sync failed:[/red] {e}")
         return
+
+    if not dry_run and report.touched_paper_ids:
+        from paper_assistant.search import get_search_manager
+
+        search_mgr = get_search_manager(config)
+        if search_mgr:
+            try:
+                search_mgr.batch_sync(report.touched_paper_ids, storage)
+            except Exception:
+                console.print("[yellow]Warning: Search index update failed.[/yellow]")
 
     data = report.to_dict()
     console.print(

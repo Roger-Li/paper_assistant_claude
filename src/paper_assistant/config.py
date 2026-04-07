@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ DEFAULT_DATA_DIR = Path.home() / ".paper-assistant"
 class Config(BaseModel):
     """Application configuration."""
 
-    anthropic_api_key: str
+    anthropic_api_key: str | None = None
     data_dir: Path = DEFAULT_DATA_DIR
     claude_model: str = "claude-sonnet-4-20250514"
     tts_voice: str = "en-US-AriaNeural"
@@ -39,6 +40,10 @@ class Config(BaseModel):
     notion_token: str | None = None
     notion_database_id: str | None = None
     notion_archive_on_delete: bool = True
+    qmd_enabled: bool = False
+    qmd_command: list[str] = ["qmd"]
+    qmd_index_name: str = "paper-assistant"
+    qmd_collection_name: str = "papers"
 
     @property
     def papers_dir(self) -> Path:
@@ -55,6 +60,10 @@ class Config(BaseModel):
     @property
     def index_path(self) -> Path:
         return self.data_dir / "index.json"
+
+    @property
+    def search_dir(self) -> Path:
+        return self.data_dir / "search"
 
     @property
     def feed_path(self) -> Path:
@@ -81,13 +90,10 @@ def load_config(**overrides: object) -> Config:
 
     kwargs: dict[str, object] = {}
 
-    # API key (required)
+    # API key (optional at load time; validated lazily at point of use)
     api_key = overrides.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "ANTHROPIC_API_KEY is required. Set it in .env or as an environment variable."
-        )
-    kwargs["anthropic_api_key"] = api_key
+    if api_key:
+        kwargs["anthropic_api_key"] = api_key
 
     # Data directory
     data_dir = overrides.get("data_dir") or os.getenv("PAPER_ASSIST_DATA_DIR")
@@ -150,5 +156,22 @@ def load_config(**overrides: object) -> Config:
             "1",
             "yes",
         )
+
+    # qmd search
+    qmd_enabled = os.getenv("PAPER_ASSIST_QMD_ENABLED")
+    if qmd_enabled is not None:
+        kwargs["qmd_enabled"] = qmd_enabled.lower() in ("true", "1", "yes")
+
+    qmd_command = os.getenv("PAPER_ASSIST_QMD_COMMAND")
+    if qmd_command:
+        kwargs["qmd_command"] = shlex.split(qmd_command)
+
+    qmd_index_name = os.getenv("PAPER_ASSIST_QMD_INDEX")
+    if qmd_index_name:
+        kwargs["qmd_index_name"] = qmd_index_name
+
+    qmd_collection_name = os.getenv("PAPER_ASSIST_QMD_COLLECTION")
+    if qmd_collection_name:
+        kwargs["qmd_collection_name"] = qmd_collection_name
 
     return Config(**kwargs)

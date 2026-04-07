@@ -30,6 +30,16 @@ class SummarizationResult:
     output_tokens: int = 0
 
 
+def _require_api_key(config: Config) -> str:
+    """Return the API key or raise a clear error."""
+    if not config.anthropic_api_key:
+        raise ValueError(
+            "ANTHROPIC_API_KEY is required for summarization. "
+            "Set it in .env or as an environment variable."
+        )
+    return config.anthropic_api_key
+
+
 async def summarize_paper_text(
     config: Config,
     metadata: PaperMetadata,
@@ -45,7 +55,7 @@ async def summarize_paper_text(
     Returns:
         SummarizationResult with full markdown and parsed sections.
     """
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=_require_api_key(config))
 
     user_message = USER_PROMPT_TEMPLATE.format(
         title=metadata.title,
@@ -85,7 +95,7 @@ async def summarize_paper_pdf(
     """
     from paper_assistant.pdf import encode_pdf_base64
 
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=_require_api_key(config))
     pdf_b64 = encode_pdf_base64(pdf_path)
 
     user_text = (
@@ -139,7 +149,7 @@ async def summarize_article_text(
 
     Uses the article-specific prompt template (not the ML paper prompt).
     """
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=_require_api_key(config))
 
     user_message = ARTICLE_USER_PROMPT_TEMPLATE.format(
         title=metadata.title,

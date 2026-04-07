@@ -59,8 +59,11 @@ class NotionSyncRequest(BaseModel):
 
 def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     """Create the router with all web UI endpoints."""
+    from paper_assistant.search import get_search_manager
+
     router = APIRouter()
     storage = StorageManager(config)
+    search_mgr = get_search_manager(config)
 
     def list_all_tags() -> list[str]:
         return sorted({tag for paper in storage.list_papers() for tag in paper.tags})
@@ -148,6 +151,9 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.post("/api/add")
     async def api_add_paper(url: str, skip_audio: bool = False, tags: list[str] | None = None):
         """API endpoint to add a paper or web article (triggers the full pipeline)."""
+        if not config.anthropic_api_key:
+            return {"error": "ANTHROPIC_API_KEY is required for summarization."}
+
         from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.podcast import generate_feed
         from paper_assistant.storage import make_audio_filename
@@ -194,6 +200,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
 
             all_papers = storage.list_papers()
             generate_feed(config, all_papers)
+
+            if search_mgr:
+                try:
+                    search_mgr.sync_paper(paper_id, storage)
+                except Exception:
+                    logger.warning("Search index update failed for %s", paper_id)
 
             return {
                 "status": "ok",
@@ -274,6 +286,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             all_papers = storage.list_papers()
             generate_feed(config, all_papers)
 
+            if search_mgr:
+                try:
+                    search_mgr.sync_paper(arxiv_id, storage)
+                except Exception:
+                    logger.warning("Search index update failed for %s", arxiv_id)
+
             return {
                 "status": "ok",
                 "paper_id": arxiv_id,
@@ -339,6 +357,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         """Add tags to a paper."""
         try:
             tags = storage.add_tags(paper_id, req.tags)
+            if search_mgr:
+                try:
+                    search_mgr.sync_paper(paper_id, storage)
+                except Exception:
+                    logger.warning("Search index update failed for %s", paper_id)
             return {"status": "ok", "tags": tags}
         except KeyError:
             return {"error": f"Paper {paper_id} not found"}
@@ -348,6 +371,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         """Remove a tag from a paper."""
         try:
             tags = storage.remove_tag(paper_id, tag)
+            if search_mgr:
+                try:
+                    search_mgr.sync_paper(paper_id, storage)
+                except Exception:
+                    logger.warning("Search index update failed for %s", paper_id)
             return {"status": "ok", "tags": tags}
         except KeyError:
             return {"error": f"Paper {paper_id} not found"}
@@ -360,6 +388,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         )
         if not report["renames"]:
             return {"error": "No valid tag rename operations provided"}
+
+        if search_mgr and report.get("changed_paper_ids"):
+            try:
+                search_mgr.batch_sync(report["changed_paper_ids"], storage)
+            except Exception:
+                logger.warning("Search index batch update failed after tag rename")
 
         return {
             "status": "ok",
@@ -374,6 +408,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             from paper_assistant.podcast import generate_feed
             all_papers = storage.list_papers()
             generate_feed(config, all_papers)
+            if search_mgr:
+                try:
+                    search_mgr.delete_paper(paper_id)
+                except Exception:
+                    logger.warning("Search index delete failed for %s", paper_id)
             return {"status": "ok"}
         return {"error": f"Paper {paper_id} not found"}
 
@@ -388,6 +427,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": f"Invalid reading status: {req.reading_status}"}
         try:
             result = storage.set_reading_status(paper_id, rs)
+            if search_mgr:
+                try:
+                    search_mgr.sync_paper(paper_id, storage)
+                except Exception:
+                    logger.warning("Search index update failed for %s", paper_id)
             return {"status": "ok", "reading_status": result.value}
         except KeyError:
             return {"error": f"Paper {paper_id} not found"}
@@ -473,6 +517,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 paper_id=payload.paper_id,
                 dry_run=payload.dry_run,
             )
+            if not payload.dry_run and search_mgr and report.touched_paper_ids:
+                try:
+                    search_mgr.batch_sync(report.touched_paper_ids, storage)
+                except Exception:
+                    logger.warning("Search index batch update failed after Notion sync")
             return {"status": "ok", "report": report.to_dict()}
         except Exception as e:
             return {"error": str(e)}
@@ -572,6 +621,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             generate_feed(config, all_papers)
         except Exception:
             pass
+
+        if search_mgr:
+            try:
+                search_mgr.sync_paper(paper_id, storage)
+            except Exception:
+                logger.warning("Search index update failed for %s", paper_id)
 
         response = {"status": "ok", "paper_id": paper_id, "title": paper.metadata.title}
         if audio_warning:

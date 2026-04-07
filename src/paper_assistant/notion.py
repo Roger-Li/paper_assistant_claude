@@ -729,6 +729,7 @@ class SyncReport:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
+    touched_paper_ids: set[str] = field(default_factory=set)
     started_at: datetime = field(default_factory=_utc_now)
     finished_at: datetime | None = None
 
@@ -1437,6 +1438,7 @@ def _set_local_from_remote(
         paper.last_synced_at = sync_time
         storage.add_paper(paper)
         report.local_updated += 1
+        report.touched_paper_ids.add(pid)
     elif dry_run and local_changed:
         report.local_updated += 1
     elif not dry_run:
@@ -1537,6 +1539,7 @@ async def _import_remote_only(
         report.local_archived += 1
 
     report.local_created += 1
+    report.touched_paper_ids.add(rid)
 
 
 async def sync_notion(
@@ -1632,6 +1635,7 @@ async def sync_notion(
             if not local_archived:
                 storage.set_archived(pid, True, modified_at=remote.remote_modified_at)
                 report.local_archived += 1
+                report.touched_paper_ids.add(pid)
             if not remote_archived and config.notion_archive_on_delete:
                 await client.set_archived(remote.page_id, True)
                 report.notion_archived += 1

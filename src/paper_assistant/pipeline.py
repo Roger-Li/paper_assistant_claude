@@ -149,6 +149,16 @@ async def create_local_entry(
     except Exception as exc:
         warnings.append(f"Feed regeneration failed: {exc}")
 
+    # Update search index
+    from paper_assistant.search import get_search_manager
+
+    search_mgr = get_search_manager(config)
+    if search_mgr:
+        try:
+            search_mgr.sync_paper(paper_id, storage)
+        except Exception:
+            logger.warning("Search index update failed for %s", paper_id)
+
     return LocalEntryResult(
         paper=storage.get_paper(paper_id) or paper,
         summary_path=summary_path,
@@ -255,6 +265,16 @@ async def import_paper_summary(
             notion_synced = True
         except Exception as exc:
             notion_error = str(exc)
+
+    # Update search index
+    from paper_assistant.search import get_search_manager
+
+    search_mgr = get_search_manager(config)
+    if search_mgr:
+        try:
+            search_mgr.sync_paper(paper_id, storage)
+        except Exception:
+            logger.warning("Search index update failed for %s", paper_id)
 
     final_paper = storage.get_paper(paper_id) or paper
     audio_path = (

@@ -6,6 +6,7 @@ For user-facing setup and usage, see [README.md](README.md).
 
 - `index.json` is the only state database. `StorageManager` re-reads from disk each call — never cache instances across operations.
 - Config resolution: CLI flag > env var > `.env` > default.
+- `ANTHROPIC_API_KEY` is optional at load time; validated lazily in `summarizer.py` at point of use. Read-only commands (`search`, `list`, `serve`) work without it.
 - Design docs for implemented features live in `docs/`. Roadmap is in `docs/roadmap.md`.
 
 ## Critical Invariants
@@ -59,6 +60,15 @@ For user-facing setup and usage, see [README.md](README.md).
 
 7. **Feed/audio failures should degrade gracefully.**
    Summary import/add should still succeed when TTS or feed regeneration fails.
+
+7b. **qmd search is optional.**
+   `get_search_manager(config)` returns `None` when disabled or unavailable.
+   All mutation hooks guard with `if search_mgr:` and catch exceptions.
+   Search failures never break primary operations.
+   `search/` directory contains derived docs (`{paper_id}.md`) — never index raw summary files.
+   Single-paper mutations use `sync_paper()`; multi-paper mutations use `batch_sync()`.
+   `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
+   Every qmd invocation passes `--index <qmd_index_name>` for isolation.
 
 8. **Notion sync should remain manual and non-destructive by default.**
    `sync_notion(..., dry_run=True)` must not mutate local or Notion state.
@@ -128,6 +138,7 @@ Target files:
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
 - `tests/test_notion.py` — sync conflict/merge rules
+- `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 
 Browser Reader Mode: automated coverage at the HTML contract level; manual desktop Brave/Chromium QA for speech events, sentence progression, highlight behavior, and keyboard shortcuts.
 
