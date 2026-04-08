@@ -33,14 +33,21 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    c. If native PDF reading fails, extract text:
       `.venv/bin/paper-assist extract-text .artifacts/summarize-paper/<id>/paper.pdf --output .artifacts/summarize-paper/<id>/paper.md`
       then read the extracted markdown file.
-7. Generate the summary from the tracked instructions.
+7. **Related-paper lookup** (optional, best-effort):
+   If the search index is available, query for related papers in the library:
+   `.venv/bin/paper-assist search --json "<paper title>" --limit 5 --mode hybrid`
+   If this returns results, use them as context when generating the summary —
+   note connections, contrasts, or builds-on relationships with existing library papers.
+   If the command fails or returns no results, proceed without related context.
+8. Generate the summary from the tracked instructions.
    Adaptations for the saved document:
    - Omit `# Follow-ups` because it is interactive-only
    - `# My-Level Adaptation` profile: ML engineer + researcher
      (implementation details, architecture decisions, code snippets,
      theoretical contributions, comparison with prior work, open questions)
-8. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-9. Import it in the foreground:
+   - If related papers were found in step 7, weave brief connections into the summary where natural
+9. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
+10. Import it in the foreground:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model codex \
@@ -55,7 +62,7 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    Omit `--sync-notion` only when the user explicitly passed `--no-sync-notion`.
    `paper.md` is always created (by `hf papers read` or `extract-text`).
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-10. Parse the JSON output and report the result to the user.
+11. Parse the JSON output and report the result to the user.
 
 ## Error Handling
 

@@ -69,6 +69,10 @@ Configuration resolution order is:
 | `PAPER_ASSIST_ARXIV_MAX_RETRIES` | No | `6` | Retry attempts for arXiv `429`, `5xx`, and transient network errors. |
 | `PAPER_ASSIST_ARXIV_BACKOFF_BASE_SECONDS` | No | `2.0` | Base delay for exponential backoff (with jitter). |
 | `PAPER_ASSIST_ARXIV_BACKOFF_CAP_SECONDS` | No | `90.0` | Max delay cap for exponential backoff. |
+| `PAPER_ASSIST_QMD_ENABLED` | No | `false` | Enable qmd-based search. |
+| `PAPER_ASSIST_QMD_COMMAND` | No | `qmd` | Shell-style command to invoke qmd (e.g. `npx @tobilu/qmd`). |
+| `PAPER_ASSIST_QMD_INDEX` | No | `paper-assistant` | Named qmd index for isolation. |
+| `PAPER_ASSIST_QMD_COLLECTION` | No | `papers` | qmd collection name. |
 | `PAPER_ASSIST_NOTION_SYNC_ENABLED` | No | `false` | Enable manual Notion sync features. |
 | `PAPER_ASSIST_NOTION_TOKEN` | No* | none | Notion integration token (*required when sync is enabled). |
 | `PAPER_ASSIST_NOTION_DATABASE_ID` | No* | none | Target Notion database ID (*required when sync is enabled). |
@@ -83,6 +87,7 @@ Default path: `~/.paper-assistant/`
 ├── papers/     # [Paper][{paper_id}] {title}.md / [Note][{paper_id}] {title}.md
 ├── audio/      # {paper_id}.mp3
 ├── pdfs/       # {arxiv_id}.pdf (arXiv papers only)
+├── search/     # {paper_id}.md — derived search docs (auto-managed by qmd integration)
 ├── index.json  # Source of truth for paper metadata/state
 └── feed.xml    # RSS feed
 ```
@@ -103,6 +108,9 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
 | `paper-assist serve` | Start local web app |
 | `paper-assist regenerate-feed` | Rebuild RSS feed from index |
+| `paper-assist search "<query>"` | Search papers (hybrid by default; `--mode text\|vector\|hybrid`, `--limit`, `--json`) |
+| `paper-assist index-setup` | Create qmd collection and rebuild all search docs |
+| `paper-assist index-rebuild` | Regenerate all search docs (`--embed` to also generate embeddings) |
 | `paper-assist notion-preflight` | Verify the configured Notion database is reachable/shared |
 | `paper-assist notion-sync` | Manual two-way sync with Notion (`--paper`, `--dry-run`) |
 
@@ -240,6 +248,65 @@ Use `paper-assist extract-text <pdf-path> [--max-pages 100] [--output FILE]` whe
 
 Skill-based summary runs now sync Notion by default, so `paper-assist notion-preflight` is the check those workflows run before import. Use `--no-sync-notion` only when you intentionally want to skip that sync.
 
+## Search (qmd)
+
+Paper Assistant integrates with [qmd](https://github.com/tobi/qmd) for full-text and semantic search across your paper library.
+
+### Setup
+
+```bash
+# Install qmd (bun)
+bun install -g github:tobi/qmd
+
+# Enable in .env
+echo "PAPER_ASSIST_QMD_ENABLED=true" >> .env
+
+# Initialize the search index and generate embeddings (required for hybrid search)
+paper-assist index-setup
+paper-assist index-rebuild --embed
+```
+
+### Usage
+
+```bash
+# Default: hybrid search (BM25 + vector + LLM re-ranking, requires embeddings)
+paper-assist search "attention mechanisms"
+
+# Generate embeddings (required for hybrid/vector; run once after index-setup, then after index-rebuild)
+paper-assist index-rebuild --embed
+
+# Text-only search (BM25, works without embeddings)
+paper-assist search "reward models" --mode text
+
+# Vector-only semantic search
+paper-assist search "papers about reward shaping" --mode vector
+
+# JSON output for programmatic use
+paper-assist search "test query" --json
+```
+
+The default search mode is **hybrid** (BM25 + vector embeddings + LLM re-ranking) for best relevance. When embeddings are not yet generated, search automatically falls back to text (BM25) with a warning. Run `paper-assist index-rebuild --embed` to enable full hybrid search.
+
+The web UI shows a search bar when qmd is enabled. The API endpoint is `GET /api/search?q=<query>&limit=10&mode=hybrid`.
+
+Search docs are kept in sync automatically — adding, editing, or deleting papers updates the search index.
+
+### MCP Server
+
+qmd includes a built-in MCP server for Claude Code integration:
+
+```json
+{
+  "mcpServers": {
+    "paper-library": {
+      "command": "qmd",
+      "args": ["--index", "paper-assistant", "mcp"],
+      "cwd": "~/.paper-assistant"
+    }
+  }
+}
+```
+
 ## Web UI and API
 
 Start server:
@@ -252,6 +319,7 @@ Key URLs:
 - UI list page: `GET /`
 - Paper details: `GET /paper/{paper_id}`
 - RSS feed: `GET /feed.xml`
+- Search API: `GET /api/search?q=&limit=&mode=`
 - Paper list JSON: `GET /api/papers`
 - Bulk tag rename: `PUT /api/tags/rename`
 - Notion sync preview: `GET /api/notion/sync/preview`
@@ -259,6 +327,7 @@ Key URLs:
 - Local note create: `POST /api/create`
 
 Features:
+- **Search**: when qmd is enabled, a search bar appears on the papers list for instant full-text search; hidden when qmd is unavailable
 - **Sorting**: click "Sort by" links on the papers list to sort by date added, title, tag, or arXiv ID
 - **Filtering**: filter papers by processing status, reading status, or tag
 - **Bulk tag edits**: from the list page, apply one or more `old => new` tag renames across all local papers; if the target tag already exists on a paper, the tags merge automatically

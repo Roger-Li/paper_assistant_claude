@@ -95,8 +95,8 @@ When qmd is disabled (`qmd_enabled=False`) or unavailable (binary not found):
 - Exit with non-zero exit code.
 
 When `--mode vector` or `--mode hybrid` is used but embeddings are missing:
-- Print setup hint: "Run `paper-assist index-rebuild --embed` to enable semantic search."
-- Exit with code 1. No silent fallback to text mode.
+- Fall back to text (BM25) search automatically.
+- Print a warning with setup hint: "Run `paper-assist index-rebuild --embed` for hybrid search."
 
 ### Web API (`/api/search`)
 
@@ -105,7 +105,7 @@ When qmd is unavailable:
 - Consistent with existing `{"error": ...}` pattern in `routes.py`.
 
 When embeddings are missing for vector/hybrid mode:
-- Return `{"error": "Semantic search requires embeddings. Run `paper-assist index-rebuild --embed`."}` with HTTP 400.
+- Fall back to text (BM25) search automatically and return results with HTTP 200.
 
 ### Mutation hooks (background index updates)
 
@@ -199,8 +199,8 @@ class SearchManager:
         mode="text"   → `qmd search` (BM25, always works)
         mode="vector"  → `qmd vsearch` (requires embeddings)
         mode="hybrid"  → `qmd query` (requires embeddings)
-        If vector/hybrid fails due to missing embeddings, raise
-        EmbeddingsNotAvailableError with setup hint. No silent fallback.
+        If vector/hybrid fails due to missing embeddings,
+        callers fall back to text mode with a warning.
         """
 
     def _run_qmd(self, args: list[str]) -> subprocess.CompletedProcess:
@@ -243,10 +243,10 @@ paper-assist index-setup      # idempotent: create collection + rebuild all sear
 paper-assist index-rebuild [--embed]  # regenerate all search docs + qmd update [+ qmd embed]
 ```
 
-- Default mode: `text` (BM25, always works).
+- Default mode: `hybrid` (BM25 + vector + LLM re-ranking; falls back to text when embeddings missing).
 - `--json` outputs JSON array for programmatic use.
 - When qmd disabled/unavailable: print setup message, exit non-zero.
-- `--mode vector`/`--mode hybrid` without embeddings → setup hint, exit code 1.
+- `--mode vector`/`--mode hybrid` without embeddings → fall back to text with warning.
 
 ### Phase 2: Search doc maintenance across all mutation paths
 
@@ -309,7 +309,7 @@ if search_mgr:
 5. **Named index isolation**: every qmd invocation passes `--index <qmd_index_name>`.
 6. **`qmd_command` is `list[str]`** internally. Env var is shell-style string → `shlex.split()`.
 7. **`is_available()` cached** on SearchManager instance.
-8. **Embeddings are explicit.** `--mode text` default always works. `--mode vector`/`--mode hybrid` → setup hint error, no silent fallback.
+8. **Hybrid default with text fallback.** Default mode is `hybrid` everywhere. When embeddings are missing, callers fall back to text (BM25) with a warning.
 9. **Search paths don't require `ANTHROPIC_API_KEY`.** Lazy validation in `summarizer.py` only.
 10. **Papers without summaries skipped.** `sync_paper()` is a no-op when `paper.summary_path is None`.
 11. **Search failures never break primary operations.** When `get_search_manager()` returned `None`: no code runs. When SearchManager exists but operation fails: log warning, continue.
@@ -337,11 +337,11 @@ if search_mgr:
 | `setup()` idempotency | Second call succeeds (collection already exists) |
 | Degraded: `get_search_manager()` None | Mutation code path does not call any search methods; no log output |
 | Degraded: operation fails | Log warning emitted; primary operation succeeds |
-| Degraded: no embeddings | `search(mode="vector")` → `EmbeddingsNotAvailableError` with hint |
+| Degraded: no embeddings | `search(mode="vector")` → `EmbeddingsNotAvailableError`; callers fall back to text |
 | CLI: qmd unavailable | `paper-assist search` → setup message, non-zero exit |
-| CLI: no embeddings | `paper-assist search --mode vector` → setup hint, exit 1 |
+| CLI: no embeddings | `paper-assist search --mode hybrid` → falls back to text with warning |
 | API: qmd unavailable | `/api/search` → `{"error": ...}`, HTTP 503 |
-| API: no embeddings | `/api/search?mode=vector` → `{"error": ...}`, HTTP 400 |
+| API: no embeddings | `/api/search?mode=hybrid` → falls back to text, HTTP 200 |
 | Tag rename | `rename_tags()` returns `changed_paper_ids`; `batch_sync()` called with them |
 | Summary edit | `api_update_summary()` → search doc updated |
 | Delete | `api_delete_paper()` → search doc removed |

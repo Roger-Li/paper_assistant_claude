@@ -71,6 +71,10 @@ For user-facing setup and usage, see [README.md](README.md).
    Single-paper mutations use `sync_paper()`; multi-paper mutations use `batch_sync()`.
    `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
    Every qmd invocation passes `--index <qmd_index_name>` for isolation.
+   Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) everywhere:
+   CLI, web API, web UI, and skill workflows.
+   When embeddings are missing, hybrid/vector automatically falls back to text (BM25) with a warning.
+   Run `paper-assist index-rebuild --embed` to enable full hybrid search.
 
 8. **Notion sync should remain manual and non-destructive by default.**
    `sync_notion(..., dry_run=True)` must not mutate local or Notion state.

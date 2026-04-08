@@ -118,6 +118,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 "active_reading_status": reading_status,
                 "all_statuses": [s.value for s in ProcessingStatus],
                 "all_reading_statuses": [rs.value for rs in ReadingStatus],
+                "search_available": search_mgr is not None,
             },
         )
 
@@ -435,6 +436,52 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"status": "ok", "reading_status": result.value}
         except KeyError:
             return {"error": f"Paper {paper_id} not found"}
+
+    @router.get("/api/search")
+    async def api_search(q: str = "", limit: int = 10, mode: str = "hybrid"):
+        """Search papers via qmd index."""
+        from starlette.responses import JSONResponse
+
+        from paper_assistant.search import EmbeddingsNotAvailableError
+
+        if not search_mgr:
+            return JSONResponse(
+                {"error": "Search is not configured. Install qmd and set PAPER_ASSIST_QMD_ENABLED=true."},
+                status_code=503,
+            )
+        if not q.strip():
+            return {"results": []}
+
+        try:
+            results = search_mgr.search(q, limit=limit, mode=mode)
+        except EmbeddingsNotAvailableError:
+            logger.info("Hybrid/vector search unavailable (no embeddings), falling back to text")
+            try:
+                results = search_mgr.search(q, limit=limit, mode="text")
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+        except RuntimeError as e:
+            err_msg = str(e)
+            if "not found" in err_msg.lower() or "collection" in err_msg.lower():
+                return JSONResponse(
+                    {"error": "Search index not initialized. Run `paper-assist index-setup` first."},
+                    status_code=503,
+                )
+            return JSONResponse({"error": err_msg}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        return {
+            "results": [
+                {
+                    "paper_id": r.paper_id,
+                    "title": r.title,
+                    "score": r.score,
+                    "snippet": r.snippet,
+                }
+                for r in results
+            ],
+        }
 
     @router.get("/api/papers")
     async def api_list_papers(

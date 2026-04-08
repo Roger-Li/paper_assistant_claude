@@ -847,3 +847,168 @@ class TestApiNotionSync:
             resp = client.post("/api/notion/sync", json={})
         assert resp.status_code == 200
         assert "error" in resp.json()
+
+
+class TestApiSearch:
+    def test_search_unavailable_returns_503(self, client):
+        """When qmd is not configured, /api/search returns 503."""
+        resp = client.get("/api/search?q=test")
+        assert resp.status_code == 503
+        assert "not configured" in resp.json()["error"]
+
+    def test_search_empty_query_returns_empty(self, tmp_path):
+        """Empty query returns empty results (not an error)."""
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+        with patch("paper_assistant.search.SearchManager.is_available", return_value=True):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/api/search?q=")
+        assert resp.status_code == 200
+        assert resp.json()["results"] == []
+
+    def test_search_returns_results(self, tmp_path):
+        """Successful search returns structured results."""
+        from paper_assistant.search import SearchResult
+
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+
+        mock_results = [
+            SearchResult(paper_id="2503.10291", title="Test Paper", score=1.5, snippet="a snippet"),
+        ]
+        with (
+            patch("paper_assistant.search.SearchManager.is_available", return_value=True),
+            patch("paper_assistant.search.SearchManager.search", return_value=mock_results),
+        ):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/api/search?q=test&limit=5")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["results"]) == 1
+        assert data["results"][0]["paper_id"] == "2503.10291"
+        assert data["results"][0]["title"] == "Test Paper"
+        assert data["results"][0]["snippet"] == "a snippet"
+
+    def test_search_falls_back_to_text_when_embeddings_missing(self, tmp_path):
+        """Hybrid/vector search without embeddings falls back to text mode."""
+        from paper_assistant.search import EmbeddingsNotAvailableError, SearchResult
+
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+
+        text_results = [
+            SearchResult(paper_id="2503.10291", title="Fallback Result", score=1.0, snippet="via text"),
+        ]
+
+        call_count = 0
+
+        def mock_search(query, limit=10, mode="hybrid"):
+            nonlocal call_count
+            call_count += 1
+            if mode in ("hybrid", "vector"):
+                raise EmbeddingsNotAvailableError("Run index-rebuild --embed")
+            return text_results
+
+        with (
+            patch("paper_assistant.search.SearchManager.is_available", return_value=True),
+            patch("paper_assistant.search.SearchManager.search", side_effect=mock_search),
+        ):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/api/search?q=test&mode=hybrid")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["results"]) == 1
+        assert data["results"][0]["title"] == "Fallback Result"
+        assert call_count == 2  # first hybrid (failed), then text (succeeded)
+
+    def test_search_uninitialized_index_returns_503(self, tmp_path):
+        """Missing collection (no index-setup) returns actionable 503."""
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+
+        with (
+            patch("paper_assistant.search.SearchManager.is_available", return_value=True),
+            patch(
+                "paper_assistant.search.SearchManager.search",
+                side_effect=RuntimeError("qmd search failed (exit 1): Collection 'papers' not found"),
+            ),
+        ):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/api/search?q=test")
+
+        assert resp.status_code == 503
+        assert "index-setup" in resp.json()["error"]
+
+    def test_search_runtime_error_returns_500(self, tmp_path):
+        """Other qmd process failures return 500."""
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+
+        with (
+            patch("paper_assistant.search.SearchManager.is_available", return_value=True),
+            patch(
+                "paper_assistant.search.SearchManager.search",
+                side_effect=RuntimeError("qmd search failed: disk I/O error"),
+            ),
+        ):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/api/search?q=test")
+
+        assert resp.status_code == 500
+        assert "error" in resp.json()
+
+
+class TestSearchBarVisibility:
+    def test_search_bar_hidden_when_qmd_disabled(self, client):
+        """Search bar should not appear when qmd is not available."""
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'id="search-input"' not in resp.text
+
+    def test_search_bar_shown_when_qmd_enabled(self, tmp_path):
+        """Search bar should appear when qmd is available."""
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+        with patch("paper_assistant.search.SearchManager.is_available", return_value=True):
+            app = create_app(cfg)
+            c = TestClient(app)
+            resp = c.get("/")
+        assert resp.status_code == 200
+        assert 'id="search-input"' in resp.text

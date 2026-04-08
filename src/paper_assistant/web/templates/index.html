@@ -5,6 +5,16 @@
 {% block content %}
 <h1 class="page-title">Papers</h1>
 
+{% if search_available %}
+<!-- Search bar -->
+<div class="search-bar">
+    <input type="search" id="search-input" placeholder="Search papers..." autocomplete="off">
+    <div id="search-results" class="search-results" hidden>
+        <div id="search-results-list"></div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Add paper form -->
 <details class="action-panel">
     <summary>Add a new paper or article</summary>
@@ -415,6 +425,79 @@ async function updateReadingStatus(select) {
         location.reload();
     }
 }
+
+// --- Search ---
+(function() {
+    const input = document.getElementById('search-input');
+    if (!input) return;
+
+    const resultsContainer = document.getElementById('search-results');
+    const resultsList = document.getElementById('search-results-list');
+    let debounceTimer = null;
+    let requestId = 0;
+
+    input.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        const q = input.value.trim();
+        if (!q) {
+            requestId++;
+            resultsContainer.hidden = true;
+            return;
+        }
+        debounceTimer = setTimeout(() => runSearch(q), 250);
+    });
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            resultsContainer.hidden = true;
+            input.blur();
+        }
+    });
+
+    // Close results when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-bar')) {
+            resultsContainer.hidden = true;
+        }
+    });
+
+    async function runSearch(q) {
+        const thisRequest = ++requestId;
+        try {
+            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=10`);
+            if (thisRequest !== requestId) return;
+            const data = await resp.json();
+            if (data.error) {
+                resultsList.innerHTML = `<div class="search-error">${data.error}</div>`;
+                resultsContainer.hidden = false;
+                return;
+            }
+            const results = data.results || [];
+            if (!results.length) {
+                resultsList.innerHTML = '<div class="search-empty">No results found</div>';
+                resultsContainer.hidden = false;
+                return;
+            }
+            resultsList.innerHTML = results.map(r => `
+                <a href="/paper/${r.paper_id}" class="search-result-item">
+                    <span class="search-result-title">${escapeHtml(r.title)}</span>
+                    <span class="search-result-id">${escapeHtml(r.paper_id)}</span>
+                    ${r.snippet ? `<span class="search-result-snippet">${escapeHtml(r.snippet)}</span>` : ''}
+                </a>
+            `).join('');
+            resultsContainer.hidden = false;
+        } catch (err) {
+            resultsList.innerHTML = `<div class="search-error">Search failed: ${err.message}</div>`;
+            resultsContainer.hidden = false;
+        }
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+})();
 
 async function runNotionSync(dryRun) {
     const paper = document.getElementById('notion-sync-paper')?.value?.trim();

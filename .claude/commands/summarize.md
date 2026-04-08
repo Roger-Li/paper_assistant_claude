@@ -27,14 +27,21 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
    c. If native PDF reading fails, extract text:
       `.venv/bin/paper-assist extract-text .artifacts/summarize-paper/<id>/paper.pdf --output .artifacts/summarize-paper/<id>/paper.md`
       then read the extracted markdown file.
-6. Generate a summary following the instructions from step 2.
+6. **Related-paper lookup** (optional, best-effort):
+   If the search index is available, query for related papers in the library:
+   `.venv/bin/paper-assist search --json "<paper title>" --limit 5 --mode hybrid`
+   If this returns results, use them as context when generating the summary —
+   note connections, contrasts, or builds-on relationships with existing library papers.
+   If the command fails or returns no results, proceed without related context.
+7. Generate a summary following the instructions from step 2.
    Adaptations for the saved document:
    - Omit `# Follow-ups` (interactive-only)
    - `# My-Level Adaptation` profile: ML engineer + researcher
      (implementation details, architecture decisions, code snippets,
      theoretical contributions, comparison with prior work, open questions)
-7. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-8. Import in the foreground and complete:
+   - If related papers were found in step 6, weave brief connections into the summary where natural
+8. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
+9. Import in the foreground and complete:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model claude-code \
@@ -49,7 +56,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
    Omit `--sync-notion` only when the user explicitly passed `--no-sync-notion`.
    `paper.md` is always created (by `hf papers read` or `extract-text`).
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-9. Report results from the JSON output to the user.
+10. Report results from the JSON output to the user.
 
 ## Error Handling
 

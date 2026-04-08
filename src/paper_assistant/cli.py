@@ -1038,9 +1038,9 @@ def regenerate_feed(ctx: click.Context) -> None:
 @click.option(
     "--mode",
     type=click.Choice(["text", "vector", "hybrid"]),
-    default="text",
+    default="hybrid",
     show_default=True,
-    help="Search mode: text (BM25), vector (semantic), or hybrid.",
+    help="Search mode: text (BM25), vector (semantic), or hybrid (BM25 + vector + LLM re-ranking).",
 )
 @click.option("--json", "json_output", is_flag=True, help="Output results as JSON.")
 @click.pass_context
@@ -1074,9 +1074,16 @@ def search(
 
     try:
         results = mgr.search(query, limit=limit, mode=mode)
-    except EmbeddingsNotAvailableError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
+    except EmbeddingsNotAvailableError:
+        console.print(
+            "[yellow]Embeddings not available — falling back to text search.[/yellow] "
+            "Run `paper-assist index-rebuild --embed` for hybrid search."
+        )
+        try:
+            results = mgr.search(query, limit=limit, mode="text")
+        except Exception as e:
+            console.print(f"[red]Search failed:[/red] {e}")
+            raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Search failed:[/red] {e}")
         raise SystemExit(1)
