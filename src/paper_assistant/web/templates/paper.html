@@ -66,8 +66,10 @@
     {% if paper.summary_path %}
     <button id="edit-btn" class="outline" onclick="toggleEdit()">Edit Summary</button>
     {% endif %}
+    <button id="sync-notion-btn" class="outline" onclick="syncWithNotion()">Sync with Notion</button>
     <button id="delete-btn" class="secondary outline" onclick="deletePaper()">Delete this entry</button>
 </div>
+<div id="sync-notion-status"></div>
 
 <!-- Edit panel (hidden by default) -->
 <div id="edit-panel" style="display: none; margin-bottom: 1rem;">
@@ -257,6 +259,58 @@ async function toggleEdit() {
         document.getElementById('edit-status').innerHTML = '';
     }
     editMode = !editMode;
+}
+
+async function syncWithNotion() {
+    const btn = document.getElementById('sync-notion-btn');
+    const status = document.getElementById('sync-notion-status');
+
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Syncing\u2026';
+    status.innerHTML = '';
+
+    try {
+        const resp = await fetch('/api/notion/sync', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({paper_id: paperId, dry_run: false}),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            status.innerHTML = `<p class="error">${data.error}</p>`;
+            return;
+        }
+
+        const r = data.report || {};
+        const parts = [];
+        if (r.notion_created) parts.push(`${r.notion_created} created in Notion`);
+        if (r.notion_updated) parts.push(`${r.notion_updated} updated in Notion`);
+        if (r.local_updated) parts.push(`${r.local_updated} updated locally`);
+        if (r.local_created) parts.push(`${r.local_created} created locally`);
+
+        const summary = parts.length ? parts.join(', ') : 'Already in sync';
+        status.innerHTML = `<p class="sync-success">${summary}.</p>`;
+
+        if (r.warnings && r.warnings.length) {
+            status.innerHTML += `<p class="sync-warning">${r.warnings.join(' | ')}</p>`;
+        }
+        if (r.errors && r.errors.length) {
+            status.innerHTML += `<p class="error">${r.errors.join(' | ')}</p>`;
+        }
+
+        // Reload if local data changed so the page reflects updates
+        if (r.local_updated || r.local_created) {
+            setTimeout(() => location.reload(), 1200);
+        }
+    } catch (err) {
+        status.innerHTML = `<p class="error">Sync failed: ${err.message}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        btn.textContent = 'Sync with Notion';
+    }
 }
 
 async function saveSummary() {

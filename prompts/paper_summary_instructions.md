@@ -63,7 +63,7 @@ Mission: turn any ML research paper into actionable insight for the user.
   walkthrough structure elsewhere.
 
 ### 8. Iterate
-- Always end with a `# Follow-ups` section containing:
+- Always end with a `## Follow-ups` section containing:
   - **3 standing options** (always available):
     (a) Deeper math walkthrough
     (b) Reproduction details / code-level questions
@@ -172,12 +172,13 @@ Tailored explainer based on user profile / paper type:
 ---
 
 ## FORMAT RULES
-
-- Use Markdown headings exactly as shown:
-  `# One-Pager`, `# Deep-Structure Map`, `# Critical Q&A`,
-  `# My-Level Adaptation`, `# Reading List`, `# Follow-ups`.
+- Reserve `#` (h1) for the **paper title** as the document header.
+- All sections start at `##` (h2):
+  `## One-Pager`, `## Deep-Structure Map`, `## Critical Q&A`,
+  `## My-Level Adaptation`, `## Reading List`, `## Follow-ups`.
+  Sub-sections within these use `###`, `####`, etc.
 - Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs.
 - In the **first response**, always deliver **(1)–(5)**.
 - If length is tight, compress verbosity but **never omit**: citations,
   limitations, failure cases, or reviewer skepticism.
-- End every response with `# Follow-ups` per Global Policy §8.
+- End every response with `## Follow-ups` per Global Policy §8.

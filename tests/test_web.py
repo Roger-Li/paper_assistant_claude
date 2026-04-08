@@ -173,6 +173,13 @@ class TestPaperDetailPage:
         assert "Audio Summary" in resp.text
         assert "/audio/2503.10291.mp3" in resp.text
 
+    def test_sync_notion_button_renders(self, client, paper_in_index):
+        resp = client.get("/paper/2503.10291")
+        assert resp.status_code == 200
+        assert "Sync with Notion" in resp.text
+        assert 'id="sync-notion-btn"' in resp.text
+        assert 'id="sync-notion-status"' in resp.text
+
     def test_note_without_source_url_or_authors_renders_cleanly(self, client, storage):
         paper = Paper(
             metadata=_make_note_metadata(),

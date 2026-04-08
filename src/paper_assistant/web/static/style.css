@@ -616,6 +616,34 @@ hgroup p a {
   border-color: rgba(220, 38, 38, 0.4);
 }
 
+.action-bar #sync-notion-btn {
+  border-color: rgba(8, 145, 178, 0.35);
+  color: #0891b2;
+}
+
+.action-bar #sync-notion-btn:hover {
+  background: var(--pa-status-audio-bg);
+  border-color: rgba(8, 145, 178, 0.45);
+  box-shadow: var(--pa-shadow-sm);
+}
+
+#sync-notion-status {
+  margin-bottom: 1rem;
+}
+
+#sync-notion-status p {
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+#sync-notion-status .sync-success {
+  color: var(--pa-status-complete);
+}
+
+#sync-notion-status .sync-warning {
+  color: var(--pa-status-pending);
+}
+
 
 /* ── Empty State ── */
 .empty-state {
