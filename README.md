@@ -188,7 +188,7 @@ paper-assist notion-sync --paper 2503.10291
 
 ## Skills
 
-The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. Both the Claude Code command and the Codex skill read the same tracked instructions from `prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
+The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. The Claude Code command, Codex skill, and Kiro skill all read the same tracked instructions from `prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
 
 ### Setup
 
@@ -196,7 +196,7 @@ The skill-based workflow automates the manual loop of reading a paper, generatin
 ./scripts/install-skills.sh
 ```
 
-The installer symlinks the in-repo Codex skill into `~/.codex/skills/` and prints the Claude Code permission entries needed for:
+The installer symlinks the in-repo Codex skill into `~/.codex/skills/`, prints the Kiro terminal requirements, and prints the Claude Code permission entries needed for:
 - `hf papers info` + `hf papers read` (metadata + primary paper fetch)
 - `curl` PDF download (fallback)
 - `paper-assist skill-import`
@@ -224,7 +224,26 @@ Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
 
 You can also pass just `2503.10291` or an HF paper URL like `https://huggingface.co/papers/2503.10291`. The in-repo `skills/codex/summarize-paper/SKILL.md` normalizes any accepted form to the arXiv ID, uses the Hugging Face paper route by default for retrieval, and then imports via the canonical arXiv abs URL while stamping provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
 
-Both skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxiv_id>/` instead of hardcoded `/tmp/...` paths. That keeps the intermediate PDF/markdown/summary files visible while the workflow is running, and `skill-import` can clean them up safely afterward because `.artifacts/` is an allowed cleanup root.
+### Kiro
+
+Ask Kiro's agent to summarize a paper:
+
+```text
+Summarize this paper: https://arxiv.org/abs/2503.10291 --tags rl --tags agent
+```
+
+The in-repo skill at `.kiro/skills/summarize-paper.md` follows the same workflow as the Claude Code and Codex skills, adapted for environments without Notion or qmd search. Provenance is stamped as `kiro`. Bare arXiv IDs and HF paper URLs are also accepted.
+
+Setup on a work laptop:
+
+```bash
+cp .env.work .env                    # minimal config — no API keys needed
+python -m venv .venv                 # create repo-local venv
+.venv/bin/pip install -e .           # install paper-assistant
+.venv/bin/pip install "huggingface-hub[cli]"  # hf papers info/read
+```
+
+All three skills now use repo-local artifacts under `.artifacts/summarize-paper/<arxiv_id>/` instead of hardcoded `/tmp/...` paths. That keeps the intermediate PDF/markdown/summary files visible while the workflow is running, and `skill-import` can clean them up safely afterward because `.artifacts/` is an allowed cleanup root.
 
 ### `skill-import`
 
