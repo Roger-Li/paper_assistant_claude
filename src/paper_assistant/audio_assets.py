@@ -54,6 +54,7 @@ async def render_audio_assets(
     skip_transcript: bool,
     skip_audio: bool,
     provided_script_markdown: str | None = None,
+    skip_script_generation: bool = False,
     script_model_override: str | None = None,
 ) -> AudioAssetsResult:
     """Render transcript + audio for a paper. Never raises upward.
@@ -81,10 +82,24 @@ async def render_audio_assets(
     if provided_script_markdown is not None:
         script_markdown = provided_script_markdown.strip() or None
         if script_markdown is None:
-            result.warnings.append(
-                "Provided transcript was empty; falling back to raw summary."
-            )
-    elif not skip_transcript:
+            if skip_script_generation:
+                result.warnings.append(
+                    "Provided transcript was empty; skipped narration script "
+                    "generation (caller opted out), so audio will use the raw summary."
+                )
+            else:
+                result.warnings.append(
+                    "Provided transcript was empty; falling back to generated narration "
+                    "or the raw summary."
+                )
+    elif skip_transcript:
+        pass
+    elif skip_script_generation:
+        result.warnings.append(
+            "Skipped narration script generation (caller opted out); "
+            "audio will use the raw summary."
+        )
+    else:
         script_markdown, script_model, script_warning = await _try_generate_script(
             config=config,
             paper=paper,

@@ -242,7 +242,7 @@ async def generate_audio_script(
 - Uses `anthropic.AsyncAnthropic` with `model or
   config.audio_script_model` (default `claude-haiku-4-5-20251001`).
 - Lazy `ANTHROPIC_API_KEY` validation — does not break read-only commands.
-- Prompt lives at `src/paper_assistant/prompts/audio_script_instructions.md` (inside the package so installed wheels ship it).
+- Prompt lives at `src/paper_assistant/prompts/audio_script_instructions.md` (inside the package so installed wheels ship it). The shared skill summary instructions now live alongside it at `src/paper_assistant/prompts/paper_summary_instructions.md`.
 
 Prompt requirements:
 

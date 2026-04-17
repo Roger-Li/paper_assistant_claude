@@ -7,10 +7,10 @@ Use this skill when the user wants a paper summarized and stored through Paper A
 
 ## Workflow
 
-1. Parse the user's request for a bare arXiv ID, a full arXiv URL, or a Hugging Face paper URL, plus any tags and flags such as `--skip-audio` and `--force`.
+1. Parse the user's request for a bare arXiv ID, a full arXiv URL, or a Hugging Face paper URL, plus any tags and flags such as `--skip-audio`, `--skip-transcript`, and `--force`.
    Normalize any accepted input form to the canonical arXiv ID `<id>` immediately and use that ID for the rest of the workflow.
    Tags must be repeated flags, e.g. `--tags rl --tags agent`.
-2. Read `prompts/paper_summary_instructions.md`.
+2. Read `src/paper_assistant/prompts/paper_summary_instructions.md`.
 3. Create a repo-local artifact directory for the normalized arXiv ID:
    `.artifacts/summarize-paper/<id>/`
 4. Use the Hugging Face paper route as the default retrieval path.
@@ -37,12 +37,29 @@ Use this skill when the user wants a paper summarized and stored through Paper A
      (implementation details, architecture decisions, code snippets,
      theoretical contributions, comparison with prior work, open questions)
 6. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-7. Import it in the foreground:
+7. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
+   a. Read `.artifacts/summarize-paper/<id>/summary.md`.
+   b. Read `src/paper_assistant/prompts/audio_script_instructions.md`.
+   c. Using the host model, write the narration transcript to `.artifacts/summarize-paper/<id>/transcript.md`.
+   d. Verify the transcript file exists and has more than 32 non-whitespace characters.
+   e. If transcript generation fails, emit a visible warning to the user before import and apply this exact fallback policy:
+
+      | User flags on `/summarize` | Add to `skill-import` | Result |
+      | --- | --- | --- |
+      | plain run (no `--force`, no skip flags) | `--skip-transcript` | audio still uses the raw summary |
+      | `--force` re-import | `--skip-audio` | existing transcript/audio are preserved |
+      | user already passed `--skip-transcript` | unchanged | raw-summary audio path remains intentional |
+      | user already passed `--skip-audio` | unchanged | transcript/audio remain preserved |
+
+      Never pass `--script-file` or `--no-script-fallback` after a transcript-generation failure.
+8. Import it in the foreground:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model kiro \
-     [--tags ...] [--skip-audio] [--force] \
+     [--tags ...] [--skip-audio] [--skip-transcript] [--force] \
+     [--script-file .artifacts/summarize-paper/<id>/transcript.md --no-script-fallback] \
      --cleanup-file .artifacts/summarize-paper/<id>/summary.md \
+     [--cleanup-file .artifacts/summarize-paper/<id>/transcript.md] \
      --cleanup-file .artifacts/summarize-paper/<id>/paper.md \
      [--cleanup-file .artifacts/summarize-paper/<id>/paper.pdf] \
      --json`
@@ -50,8 +67,10 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    not the original Hugging Face or other URL, so that the paper_id resolves to
    the arXiv ID.
    `paper.md` is always created (by `hf papers read` or `extract-text`).
+   Add `--script-file ... --no-script-fallback` only when transcript generation succeeded.
+   Only include transcript cleanup when `transcript.md` was created and passed to `skill-import`.
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-8. Parse the JSON output and report the result to the user.
+9. Parse the JSON output and report the result to the user.
 
 ## Error Handling
 

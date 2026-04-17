@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from paper_assistant.arxiv import ArxivRateLimitError
 from paper_assistant.config import Config
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, ReadingStatus, SourceType
+from paper_assistant.pipeline import ImportResult
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult
 from paper_assistant.web.app import create_app
@@ -39,6 +40,21 @@ def _make_note_metadata(**overrides):
     }
     defaults.update(overrides)
     return PaperMetadata(**defaults)
+
+
+def _make_import_result(config: Config, *, warnings: list[str] | None = None) -> ImportResult:
+    return ImportResult(
+        paper_id="2503.10291",
+        title="VisualPRM: An Effective Process Reward Model",
+        summary_path=config.papers_dir / "summary.md",
+        audio_path=config.audio_dir / "2503.10291.mp3",
+        model_used="manual",
+        notion_synced=False,
+        notion_error=None,
+        warnings=warnings or [],
+        transcript_path=config.transcripts_dir / "2503.10291.md",
+        backend_used="mlx",
+    )
 
 
 @pytest.fixture
@@ -516,6 +532,42 @@ class TestApiImport:
         assert data["status"] == "ok"
         assert data["paper_id"] == "2503.10291"
         assert data["title"] == "arXiv 2503.10291"
+
+    def test_import_forwards_script_markdown(self, client, config):
+        with patch(
+            "paper_assistant.pipeline.import_paper_summary",
+            new_callable=AsyncMock,
+            return_value=_make_import_result(config),
+        ) as import_summary:
+            resp = client.post(
+                "/api/import",
+                json={
+                    "url": "https://arxiv.org/abs/2503.10291",
+                    "markdown": "# One-Pager\nSummary content",
+                    "script_markdown": "Curated narration",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert import_summary.await_args.kwargs["provided_script_markdown"] == "Curated narration"
+
+    def test_import_forwards_skip_script_generation(self, client, config):
+        with patch(
+            "paper_assistant.pipeline.import_paper_summary",
+            new_callable=AsyncMock,
+            return_value=_make_import_result(config),
+        ) as import_summary:
+            resp = client.post(
+                "/api/import",
+                json={
+                    "url": "https://arxiv.org/abs/2503.10291",
+                    "markdown": "# One-Pager\nSummary content",
+                    "skip_script_generation": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert import_summary.await_args.kwargs["skip_script_generation"] is True
 
 
 class TestApiCreate:

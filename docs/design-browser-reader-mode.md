@@ -11,6 +11,11 @@ Paper Assistant already supports generated MP3 narration through `tts.py`, but t
 
 The resulting feature is a browser-native Reader Mode built on the Web Speech API and rendered entirely on the client side.
 
+Note: this document describes the current implementation. After the transcript-backed
+audio rollout, Reader Mode is intentionally still browser-native for now, but it no
+longer matches the saved transcript/MLX audio path one-to-one. The follow-up bug is
+tracked in `docs/roadmap.md` (item 2d).
+
 ---
 
 ## Goals
@@ -226,11 +231,15 @@ Recommended checks:
 - Word-level sync is intentionally out of scope.
 - Technical blocks are visible but skipped in speech.
 - Reader Mode is optimized for desktop usage, not mobile-first behavior.
+- Reader Mode currently speaks the rendered summary view, not `transcripts/{paper_id}.md`.
+- Reader Mode voice selection currently affects browser speech only; it does not control the saved MLX/Qwen narration voice.
+- Reader Mode progress highlighting is driven by Web Speech boundary events, not by playback of the generated MP3.
 
 ---
 
 ## Future Improvements
 
+- Rework Reader Mode around saved transcripts + generated MP3 playback now that transcript-backed audio exists.
 - Optional sticky mini-toolbar while actively reading.
 - Better fallback when `boundary` events are missing or unreliable.
 - Smarter spoken placeholders for skipped technical blocks, such as "equation omitted."

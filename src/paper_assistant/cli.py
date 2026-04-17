@@ -739,6 +739,7 @@ async def _run_import_pipeline(
     model: str,
     sync_notion: bool,
     provided_script_markdown: str | None = None,
+    skip_script_generation: bool = False,
 ):
     from paper_assistant.config import load_config
     from paper_assistant.pipeline import import_paper_summary
@@ -760,6 +761,7 @@ async def _run_import_pipeline(
         force=force,
         sync_notion=sync_notion,
         provided_script_markdown=provided_script_markdown,
+        skip_script_generation=skip_script_generation,
     )
 
 
@@ -782,6 +784,12 @@ async def _run_import_pipeline(
     default=None,
     help="Use this file as the narration transcript instead of generating one.",
 )
+@click.option(
+    "--no-script-fallback",
+    is_flag=True,
+    default=False,
+    help="Never call the Anthropic API for narration; require --script-file or warn.",
+)
 @click.option("--force", is_flag=True, help="Merge over an existing paper instead of failing.")
 @click.option("--cleanup-file", multiple=True, help="Temporary file to delete after a successful import.")
 @click.option("--json", "json_output", is_flag=True, help="Output ImportResult as JSON.")
@@ -797,6 +805,7 @@ def skill_import(
     skip_audio: bool,
     skip_transcript: bool,
     script_file: str | None,
+    no_script_fallback: bool,
     force: bool,
     cleanup_file: tuple[str, ...],
     json_output: bool,
@@ -829,6 +838,7 @@ def skill_import(
                 model=model_label,
                 sync_notion=sync_notion,
                 provided_script_markdown=provided_script_markdown,
+                skip_script_generation=no_script_fallback,
             )
         )
     except Exception as exc:

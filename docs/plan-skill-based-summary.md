@@ -44,7 +44,7 @@ Claude Code                          Codex
 
 ## Step 1: Create tracked prompt asset
 
-**Create:** `prompts/paper_summary_instructions.md`
+**Create:** `src/paper_assistant/prompts/paper_summary_instructions.md`
 
 Seed it with the current instruction content that currently lives in the local,
 gitignored `.artifacts/` files.
@@ -54,7 +54,7 @@ The skill instructions need to live in a tracked, reviewable location that both
 Claude Code and Codex can read reliably.
 
 **Migration**: Update manual ChatGPT/Claude/Codex project references to point to
-`prompts/paper_summary_instructions.md`. If the user wants to keep personal
+`src/paper_assistant/prompts/paper_summary_instructions.md`. If the user wants to keep personal
 copies or symlinks under `.artifacts/` for convenience, that can remain a local
 workflow choice, but it is not repo-managed.
 
@@ -272,7 +272,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 t2] [--sync-notion] [--skip-audio
 ## Workflow
 
 1. Parse $ARGUMENTS for URL, tags, flags.
-2. Read summary instructions from prompts/paper_summary_instructions.md
+2. Read summary instructions from src/paper_assistant/prompts/paper_summary_instructions.md
 3. Extract arxiv ID from URL. Download PDF:
    curl -sL -o /tmp/paper_<id>.pdf https://arxiv.org/pdf/<id>
 4. Read the PDF using available capabilities.
@@ -321,7 +321,7 @@ paper-assistant library with optional TTS audio and Notion sync."
 ```
 
 Body: same workflow as Claude Code command, adapted for Codex conventions:
-- Same reference to `prompts/paper_summary_instructions.md`
+- Same reference to `src/paper_assistant/prompts/paper_summary_instructions.md`
 - Same PDF strategy (capability-based first, `extract-text --output` fallback)
 - Same adaptations (omit Follow-ups, ML engineer + researcher profile)
 - `--model codex` instead of `--model claude-code`
@@ -424,7 +424,7 @@ Fold section compatibility checks into the existing file:
 
 | File | Action | Purpose |
 |---|---|---|
-| `prompts/paper_summary_instructions.md` | **Create** | Tracked shared core instructions for Claude Code, Codex, and manual workflows |
+| `src/paper_assistant/prompts/paper_summary_instructions.md` | **Create** | Tracked shared core instructions for Claude Code, Codex, and manual workflows |
 | `src/paper_assistant/pipeline.py` | **Modify** | Add `ImportResult`, `DuplicatePaperError`, `import_paper_summary()` with force-merge |
 | `src/paper_assistant/cli.py` | **Modify** | Add `--model` to import, refactor to call helper, add `skill-import` + `extract-text` |
 | `.claude/commands/summarize.md` | **Create** | Claude Code slash command (thin adapter) |
@@ -447,7 +447,7 @@ Fold section compatibility checks into the existing file:
 
 | File | Role |
 |---|---|
-| `prompts/paper_summary_instructions.md` | Shared core instructions read at runtime by both skills |
+| `src/paper_assistant/prompts/paper_summary_instructions.md` | Shared core instructions read at runtime by both skills |
 | `src/paper_assistant/summarizer.py` | `parse_summary_sections()`, `find_one_pager()`, `format_summary_file()` |
 | `src/paper_assistant/notion.py` | `sync_notion()` for optional sync |
 | `src/paper_assistant/pdf.py` | `extract_text_from_pdf()` for fallback |

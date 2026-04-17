@@ -109,6 +109,31 @@ def _stub_render_audio_assets(regenerate_audio: bool = True):
     return _stub
 
 
+def _seed_existing_transcript_and_audio(
+    config: Config,
+    storage: StorageManager,
+    paper: Paper,
+    *,
+    transcript_text: str = "Old narration",
+    audio_bytes: bytes = b"old-audio",
+) -> Paper:
+    transcript_rel = f"transcripts/{paper.metadata.paper_id}.md"
+    audio_rel = paper.audio_path or f"audio/{paper.metadata.paper_id}.mp3"
+
+    transcript_file = config.data_dir / transcript_rel
+    transcript_file.parent.mkdir(parents=True, exist_ok=True)
+    transcript_file.write_text(transcript_text, encoding="utf-8")
+
+    audio_file = config.data_dir / audio_rel
+    audio_file.parent.mkdir(parents=True, exist_ok=True)
+    audio_file.write_bytes(audio_bytes)
+
+    paper.transcript_path = transcript_rel
+    paper.audio_path = audio_rel
+    storage.add_paper(paper)
+    return storage.get_paper(paper.metadata.paper_id) or paper
+
+
 @pytest.mark.asyncio
 async def test_import_happy_path(config, storage):
     metadata = _metadata()
@@ -506,6 +531,132 @@ async def test_force_merge_audio_replace(config, storage):
 
 
 @pytest.mark.asyncio
+async def test_force_import_with_script_file_and_no_fallback_skips_api_generation(config, storage):
+    metadata = _metadata()
+    existing = _seed_existing_transcript_and_audio(
+        config,
+        storage,
+        _existing_paper(metadata),
+    )
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_backend,
+        patch(
+            "paper_assistant.audio_assets._try_generate_script",
+            new_callable=AsyncMock,
+        ) as try_script,
+    ):
+        fake = AsyncMock()
+        fake.name = "mlx"
+        fake.synthesize.side_effect = _write_audio
+        get_backend.return_value = fake
+
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nUpdated body",
+            model="codex/gpt-5.4",
+            force=True,
+            provided_script_markdown="Fresh scripted narration.",
+            skip_script_generation=True,
+        )
+
+    paper = storage.get_paper(metadata.paper_id)
+    assert paper is not None
+    assert paper.transcript_path == f"transcripts/{metadata.paper_id}.md"
+    assert result.transcript_path == config.transcripts_dir / f"{metadata.paper_id}.md"
+    assert result.transcript_path.read_text(encoding="utf-8") == "Fresh scripted narration."
+    assert result.audio_path == config.audio_dir / f"{metadata.paper_id}.mp3"
+    try_script.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_force_import_skip_audio_preserves_assets_even_with_no_fallback(config, storage):
+    metadata = _metadata()
+    existing = _seed_existing_transcript_and_audio(
+        config,
+        storage,
+        _existing_paper(metadata),
+    )
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_backend,
+        patch(
+            "paper_assistant.audio_assets._try_generate_script",
+            new_callable=AsyncMock,
+        ) as try_script,
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nUpdated body",
+            model="codex/gpt-5.4",
+            force=True,
+            skip_audio=True,
+            skip_script_generation=True,
+        )
+
+    paper = storage.get_paper(metadata.paper_id)
+    assert paper is not None
+    assert paper.transcript_path == existing.transcript_path
+    assert paper.audio_path == existing.audio_path
+    assert result.transcript_path == config.data_dir / existing.transcript_path
+    assert result.audio_path == config.data_dir / existing.audio_path
+    get_backend.assert_not_called()
+    try_script.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_force_import_no_fallback_without_script_clears_transcript_but_keeps_audio_path_fresh(
+    config, storage
+):
+    metadata = _metadata()
+    _seed_existing_transcript_and_audio(
+        config,
+        storage,
+        _existing_paper(metadata),
+    )
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_backend,
+        patch(
+            "paper_assistant.audio_assets._try_generate_script",
+            new_callable=AsyncMock,
+        ) as try_script,
+    ):
+        fake = AsyncMock()
+        fake.name = "mlx"
+        fake.synthesize.side_effect = _write_audio
+        get_backend.return_value = fake
+
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nUpdated body",
+            model="codex/gpt-5.4",
+            force=True,
+            skip_script_generation=True,
+        )
+
+    paper = storage.get_paper(metadata.paper_id)
+    assert paper is not None
+    assert paper.transcript_path is None
+    assert result.transcript_path is None
+    assert result.audio_path == config.audio_dir / f"{metadata.paper_id}.mp3"
+    assert any("Skipped narration script generation" in w for w in result.warnings)
+    try_script.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_import_sync_notion_called(config, storage):
     metadata = _metadata()
 
@@ -689,6 +840,31 @@ class TestSkillImportCli:
             'explained by how models externalize uncertainty than by the presence of '
             'surface markers such as "Wait" alone.'
         ) in forwarded_markdown
+
+    def test_skill_import_cli_no_script_fallback_plumbed(self, tmp_path):
+        runner = CliRunner()
+        summary_path = tmp_path / "summary.md"
+        summary_path.write_text("# One-Pager\nBody", encoding="utf-8")
+
+        with patch(
+            "paper_assistant.cli._run_import_pipeline",
+            new=AsyncMock(return_value=_import_result(tmp_path)),
+        ) as run_import:
+            result = runner.invoke(
+                main,
+                [
+                    "skill-import",
+                    "https://arxiv.org/abs/2503.10291",
+                    "--file",
+                    str(summary_path),
+                    "--model",
+                    "codex",
+                    "--no-script-fallback",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert run_import.await_args.kwargs["skip_script_generation"] is True
 
     def test_skill_import_cli_cleanup_success(self, tmp_path):
         runner = CliRunner()

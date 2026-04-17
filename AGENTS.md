@@ -59,6 +59,9 @@ For user-facing setup and usage, see [README.md](README.md).
    `POST /api/create`, `POST /api/import`, `PUT /api/paper/{id}/summary`, the new
    `POST /api/paper/{id}/transcript/regenerate`, `paper-assist transcript regenerate`,
    and `pipeline.create_local_entry`) delegates audio work through this helper.
+   Skill-driven imports that already generated a transcript pass
+   `provided_script_markdown` and may set `skip_script_generation=True`
+   to suppress silent Anthropic fallback.
    Backends raise typed errors (`MlxConfigError`, `MlxTransientError`, `EdgeTTSError`,
    `FfmpegMissingError`); the helper converts them to warnings so import flows
    degrade gracefully (invariant 7).
@@ -117,10 +120,11 @@ For user-facing setup and usage, see [README.md](README.md).
 
 ## Skill Workflow Gotchas
 
-- `prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose.
+- `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose.
 - Paper content retrieval prefers `hf papers info <id>` for metadata and `hf papers read <id>` for body content (redirected to a file to avoid shell output truncation); PDF download is the fallback path only.
 - `skill-import` must always receive the canonical arXiv URL (`https://arxiv.org/abs/<id>`), not HuggingFace or other source URLs, so that `paper_id` resolves to the arXiv ID.
 - Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`. The Kiro skill omits Notion sync entirely (designed for environments without Notion credentials).
+- Skill-based summary workflows now generate `.artifacts/summarize-paper/<paper_id>/transcript.md` by default when audio is enabled, then pass `--script-file ... --no-script-fallback` to `skill-import`. If transcript generation fails, they warn first and fall back to `--skip-transcript` or `--skip-audio` instead of shipping an empty script file.
 - Artifacts live under `.artifacts/summarize-paper/` during skill runs.
 
 ## Web UI / Frontend

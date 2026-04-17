@@ -21,7 +21,7 @@ Platform notes:
 - Clipboard import without `--file` uses `pbpaste` (macOS command).
 - On Linux, use `paper-assist import ... --file summary.md`.
 - iCloud audio sync is macOS-specific unless you override `PAPER_ASSIST_ICLOUD_DIR`.
-- Browser Reader Mode on the paper detail page is a client-side Web Speech feature, optimized for desktop Brave/Chromium, and it prefers default/local natural voices exposed by the browser. In Reader Mode, technical blocks stay visible, but only prose is read aloud. Use `K` or `Space` to pause/resume and `Escape` to stop.
+- Browser Reader Mode on the paper detail page is a client-side Web Speech feature, optimized for desktop Brave/Chromium, and it prefers default/local natural voices exposed by the browser. In Reader Mode, technical blocks stay visible, but only prose is read aloud. Use `K` or `Space` to pause/resume and `Escape` to stop. This is still separate from the saved transcript/MLX audio path today.
 
 ## Quick Start (pip + venv)
 
@@ -232,13 +232,15 @@ paper-assist transcript regenerate 2503.10291 --script-file my-script.md
 
 The web UI exposes the same operation via a "Regenerate transcript + audio" button on each paper detail page, and `POST /api/paper/{paper_id}/transcript/regenerate` accepts optional `{"model": ..., "script_markdown": ...}` in the JSON body.
 
+The paper detail page's browser Reader Mode is still a separate Web Speech feature for now. It does not yet render from the saved transcript or inherit MLX/Qwen voice selection; that follow-up is tracked in `docs/roadmap.md`.
+
 ### Using edge-tts instead of MLX
 
 Set `PAPER_ASSIST_TTS_BACKEND=edge` if you prefer edge-tts as the primary backend. MLX remains the default because it keeps audio generation local and avoids the cloud round-trip.
 
 ## Skills
 
-The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. The Claude Code command, Codex skill, and Kiro skill all read the same tracked instructions from `prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
+The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, generating a narration transcript when audio is enabled, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. The Claude Code command, Codex skill, and Kiro skill all read the same tracked instructions from `src/paper_assistant/prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
 
 ### Setup
 
@@ -258,10 +260,10 @@ The installer symlinks the in-repo Codex skill into `~/.codex/skills/`, prints t
 Use:
 
 ```text
-/summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--force]
+/summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--skip-transcript] [--force]
 ```
 
-The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and finishes through `paper-assist skill-import`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
+The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `src/paper_assistant/prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and, unless `--skip-transcript` or `--skip-audio` is present, generates `.artifacts/summarize-paper/<id>/transcript.md` from `src/paper_assistant/prompts/audio_script_instructions.md` before finishing through `paper-assist skill-import --script-file ... --no-script-fallback`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
 Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval.
 
 ### Codex
@@ -300,14 +302,17 @@ All three skills now use repo-local artifacts under `.artifacts/summarize-paper/
 `paper-assist skill-import <url>` is the shared agent-facing import command. Key flags:
 - `--file SUMMARY.md`: required markdown input
 - `--model LABEL` and optional `--model-version VERSION`: stored as `model_used`, e.g. `codex/gpt-5.4`
+- `--script-file TRANSCRIPT.md`: use a host-generated narration script instead of generating one through the Anthropic API
+- `--no-script-fallback`: never call the Anthropic API for narration; with no usable script, warn and synthesize audio from the raw summary
 - `--sync-notion`: runs a targeted Notion sync after import
 - `--cleanup-file /path`: accepts files under Python's temp dir or the repo-local `.artifacts/` tree
 - agent hard-wrap cleanup: ordinary prose paragraphs from Claude Code/Codex summaries are normalized to soft-wrapped Markdown before saving
-- `--skip-audio`: preserves an existing `audio_path` on forced re-imports instead of regenerating
+- `--skip-audio`: preserves existing `audio_path` and `transcript_path` on forced re-imports instead of regenerating
+- `--skip-transcript`: preserves an existing `transcript_path` while still regenerating audio from the raw summary
 - `--force`: merges over an existing paper instead of replacing it
 - `--json`: emits machine-readable output for agent wrappers
 
-Force re-imports preserve `date_added`, `reading_status`, Notion linkage/timestamps, and `archived_at`; tags are unioned; existing audio is kept only when `--skip-audio` is set.
+Force re-imports preserve `date_added`, `reading_status`, Notion linkage/timestamps, and `archived_at`; tags are unioned; existing transcript/audio are kept when `--skip-audio` is set, and existing transcript alone is kept when `--skip-transcript` is set.
 
 ### `extract-text`
 
@@ -418,7 +423,9 @@ curl -X POST "http://127.0.0.1:8877/api/import" \
     "url": "https://arxiv.org/abs/2503.10291",
     "markdown": "# One Pager\\n...",
     "tags": ["manual"],
-    "skip_audio": false
+    "skip_audio": false,
+    "script_markdown": "Host-generated narration script...",
+    "skip_script_generation": true
   }'
 
 # Create a local note via API

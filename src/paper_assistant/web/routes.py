@@ -21,6 +21,8 @@ class ImportRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     skip_audio: bool = False
     skip_transcript: bool = False
+    script_markdown: str | None = None
+    skip_script_generation: bool = False
 
 
 class CreateRequest(BaseModel):
@@ -351,6 +353,8 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 tags=req.tags,
                 skip_audio=req.skip_audio,
                 skip_transcript=req.skip_transcript,
+                provided_script_markdown=req.script_markdown,
+                skip_script_generation=req.skip_script_generation,
             )
         except DuplicatePaperError as e:
             return {"error": str(e), "paper_id": e.paper_id}

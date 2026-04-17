@@ -193,6 +193,75 @@ async def test_script_failure_falls_back_to_raw_summary(config, storage):
 
 
 @pytest.mark.asyncio
+async def test_skip_script_generation_uses_raw_summary_without_api_call(config, storage):
+    paper = _paper()
+    storage.add_paper(paper)
+
+    with (
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_backend,
+        patch(
+            "paper_assistant.audio_assets._try_generate_script",
+            new_callable=AsyncMock,
+        ) as try_script,
+    ):
+        audio_out = config.audio_dir / "2503.10291.mp3"
+        fake = AsyncMock()
+        fake.name = "mlx"
+        fake.synthesize.side_effect = _fake_mlx_backend(audio_out)
+        get_backend.return_value = fake
+
+        result = await render_audio_assets(
+            config=config,
+            storage=storage,
+            paper=paper,
+            source_markdown="# One-Pager\nRaw body",
+            skip_transcript=False,
+            skip_audio=False,
+            skip_script_generation=True,
+        )
+
+    try_script.assert_not_awaited()
+    assert result.audio_path is not None
+    assert result.transcript_path is None
+    assert any("Skipped narration script generation" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_empty_provided_script_with_skip_generation_stays_on_raw_summary(config, storage):
+    paper = _paper()
+    storage.add_paper(paper)
+
+    with (
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_backend,
+        patch(
+            "paper_assistant.audio_assets._try_generate_script",
+            new_callable=AsyncMock,
+        ) as try_script,
+    ):
+        audio_out = config.audio_dir / "2503.10291.mp3"
+        fake = AsyncMock()
+        fake.name = "mlx"
+        fake.synthesize.side_effect = _fake_mlx_backend(audio_out)
+        get_backend.return_value = fake
+
+        result = await render_audio_assets(
+            config=config,
+            storage=storage,
+            paper=paper,
+            source_markdown="# One-Pager\nRaw body",
+            skip_transcript=False,
+            skip_audio=False,
+            provided_script_markdown="   \n",
+            skip_script_generation=True,
+        )
+
+    try_script.assert_not_awaited()
+    assert result.audio_path is not None
+    assert result.transcript_path is None
+    assert any("Provided transcript was empty" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
 async def test_mlx_transient_falls_back_to_edge(config, storage):
     paper = _paper()
     storage.add_paper(paper)

@@ -18,7 +18,7 @@ be tackled one-by-one in individual Claude Code sessions.
 **New needs**:
 - **Single-paper summaries via Claude Code**: User should also be able to generate
   summaries within a Claude Code session using the tracked instructions in
-  `prompts/paper_summary_instructions.md`, with the ability to adapt/improve
+  `src/paper_assistant/prompts/paper_summary_instructions.md`, with the ability to adapt/improve
   prompts based on a paper's content.
 - **Multi-paper synthesis**: Lit reviews, comparisons, study guides that synthesize
   across the existing paper library **and** additional papers discovered during the
@@ -60,7 +60,7 @@ Without MCP, the user provides URLs or paper IDs manually.
 **Recommendation**: Start with `arxiv-mcp-server` (free, arXiv-focused) for
 search and download capabilities. Use it for its MCP tools (search, download,
 convert to markdown), **not** its built-in analysis prompts — our tracked summary
-instructions in `prompts/paper_summary_instructions.md` are tailored to this
+instructions in `src/paper_assistant/prompts/paper_summary_instructions.md` are tailored to this
 repo's output format and should be preferred.
 
 ### Claude Code Skills for Research
@@ -150,20 +150,20 @@ No code changes. Config in `.claude/settings.json`.
 
 ### R4. Claude Code slash command — `/summarize` (Implemented)
 **Status**: Implemented via `.claude/commands/summarize.md`,
-`prompts/paper_summary_instructions.md`, `paper-assist skill-import`, and
+`src/paper_assistant/prompts/paper_summary_instructions.md`, `paper-assist skill-import`, and
 `paper-assist extract-text`.
 
 Implemented behavior:
 - Accepts arXiv URL/ID as input
 - Runs `paper-assist notion-preflight` before the workflow by default; users can opt out with `--no-sync-notion`
 - Downloads the PDF into repo-local `.artifacts/summarize-paper/<id>/`
-- Reads the tracked instructions in `prompts/paper_summary_instructions.md`
+- Reads the tracked instructions in `src/paper_assistant/prompts/paper_summary_instructions.md`
 - Falls back to `paper-assist extract-text --output` when native PDF reading is unavailable
 - Imports through the shared `pipeline.import_paper_summary()` path via
   `paper-assist skill-import`
 
 Deviations from the original draft:
-- Uses a tracked prompt asset in `prompts/` instead of reading `prompt.py`
+- Uses a tracked prompt asset in `src/paper_assistant/prompts/` instead of reading `prompt.py`
 - Uses a unified import helper in `pipeline.py` so `paper-assist import` and
   `paper-assist skill-import` share force-merge semantics
 - Stores deterministic provenance through `--model` / `--model-version` CLI flags

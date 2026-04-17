@@ -172,6 +172,7 @@ async def import_paper_summary(
     force: bool = False,
     sync_notion: bool = False,
     provided_script_markdown: str | None = None,
+    skip_script_generation: bool = False,
     script_model_override: str | None = None,
 ) -> ImportResult:
     """Import a pre-generated summary through the shared pipeline."""
@@ -230,6 +231,7 @@ async def import_paper_summary(
         skip_transcript=skip_transcript,
         skip_audio=skip_audio,
         provided_script_markdown=provided_script_markdown,
+        skip_script_generation=skip_script_generation,
         script_model_override=script_model_override,
     )
     warnings.extend(audio_result.warnings)
