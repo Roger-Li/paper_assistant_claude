@@ -93,37 +93,6 @@
 <hr>
 
 <div id="summary-view">
-    {% if summary %}
-    <section id="reader-mode" class="reader-mode" data-paper-id="{{ paper.metadata.paper_id }}">
-        <div class="reader-mode-toolbar">
-            <label class="reader-mode-toggle" for="reader-mode-enabled">
-                <input type="checkbox" id="reader-mode-enabled">
-                Reader mode
-            </label>
-            <button id="reader-play-top" type="button" class="outline reader-control">Play from top</button>
-            <button id="reader-pause" type="button" class="secondary outline reader-control" title="Pause or resume reading (K or Space)">Pause</button>
-            <button id="reader-stop" type="button" class="secondary outline reader-control" title="Stop reading (Escape)">Stop</button>
-            <label class="reader-field" for="reader-voice">
-                <span>Voice</span>
-                <select id="reader-voice"></select>
-            </label>
-            <label class="reader-field" for="reader-rate">
-                <span>Rate</span>
-                <select id="reader-rate">
-                    <option value="0.9">0.9x</option>
-                    <option value="0.95">0.95x</option>
-                    <option value="1" selected>1.0x</option>
-                    <option value="1.05">1.05x</option>
-                    <option value="1.1">1.1x</option>
-                    <option value="1.2">1.2x</option>
-                </select>
-            </label>
-        </div>
-        <p id="reader-status" class="reader-status">Click any sentence to read from here. Press K or Space to pause or resume, and Escape to stop. Tables, equations, and code stay visible but are not read aloud.</p>
-        <div id="reader-mode-content" class="reader-mode-content" hidden></div>
-    </section>
-    {% endif %}
-
     <!-- Summary content rendered with markdown + math -->
     <article id="summary-content">
         {% if summary %}
@@ -148,7 +117,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-<script src="/static/reader_mode.js"></script>
 <script>
 (function() {
     // Raw markdown passed from Jinja (JSON-escaped to avoid HTML issues)
@@ -183,11 +151,6 @@
             {left: '\\[', right: '\\]', display: true},
         ],
         throwOnError: false,
-    });
-
-    window.PaperReaderMode?.init({
-        rootId: 'reader-mode',
-        summaryId: 'summary-content',
     });
 })();
 </script>
@@ -243,7 +206,6 @@ async function toggleEdit() {
     const editBtn = document.getElementById('edit-btn');
 
     if (!editMode) {
-        window.PaperReaderMode?.stop();
         const resp = await fetch(`/api/paper/${paperId}/summary`);
         const data = await resp.json();
         if (data.error && !data.markdown) {

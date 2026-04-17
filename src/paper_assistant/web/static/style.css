@@ -1,7 +1,7 @@
 /* Paper Assistant — Editorial Scholarly Theme
    ============================================
    Notion-esque clarity meets academic journal refinement.
-   Built atop Pico CSS 2; reader-mode styles preserved. */
+   Built atop Pico CSS 2. */
 
 /* ── Fonts ── */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=Source+Sans+3:ital,wght@0,300..900;1,300..900&display=swap');
@@ -708,8 +708,7 @@ audio {
 
 
 /* ── Summary Article Styling ── */
-article,
-.reader-mode-content {
+article {
   font-family: var(--pa-font-body);
   line-height: 1.75;
   color: #374151;
@@ -720,8 +719,7 @@ article,
   gap: 1rem;
 }
 
-article pre,
-.reader-mode-content pre {
+article pre {
   overflow-x: auto;
   padding: 1rem;
   border-radius: var(--pa-radius);
@@ -729,14 +727,12 @@ article pre,
   border: 1px solid rgba(0, 0, 0, 0.05);
 }
 
-article pre code,
-.reader-mode-content pre code {
+article pre code {
   background: transparent;
   padding: 0;
 }
 
-article blockquote,
-.reader-mode-content blockquote {
+article blockquote {
   border-left: 3px solid var(--pa-accent);
   padding-left: 1rem;
   margin-left: 0;
@@ -744,20 +740,18 @@ article blockquote,
   font-style: italic;
 }
 
-article .katex-display,
-.reader-mode-content .katex-display {
+article .katex-display {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0.5rem 0;
 }
 
-article table,
-.reader-mode-content table {
+article table {
   width: auto;
   margin: 1rem 0;
 }
 
-article h1, .reader-mode-content h1 {
+article h1 {
   font-family: var(--pa-font-display);
   font-size: 1.55rem;
   font-weight: 600;
@@ -765,7 +759,7 @@ article h1, .reader-mode-content h1 {
   margin-top: 2rem;
   color: #111827;
 }
-article h2, .reader-mode-content h2 {
+article h2 {
   font-family: var(--pa-font-display);
   font-size: 1.3rem;
   font-weight: 500;
@@ -773,124 +767,11 @@ article h2, .reader-mode-content h2 {
   margin-top: 1.75rem;
   color: #1f2937;
 }
-article h3, .reader-mode-content h3 {
+article h3 {
   font-size: 1.05rem;
   font-weight: 600;
   margin-top: 1.35rem;
   color: #374151;
-}
-
-
-/* ══════════════════════════════════════════════
-   Reader Mode — preserved from original
-   ══════════════════════════════════════════════ */
-
-.reader-mode {
-  border: 1px solid var(--pico-muted-border-color, #d9e3e7);
-  border-radius: 0.9rem;
-  padding: 1rem;
-  background:
-    linear-gradient(135deg, rgba(16, 149, 193, 0.08), rgba(16, 149, 193, 0.02)),
-    var(--pico-card-background-color, #fff);
-}
-
-.reader-mode-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.reader-mode-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin: 0;
-  font-weight: 600;
-}
-
-.reader-mode-toggle input {
-  margin: 0;
-}
-
-.reader-control {
-  margin: 0;
-}
-
-.reader-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin: 0;
-  font-size: 0.9rem;
-}
-
-.reader-field span {
-  font-weight: 600;
-}
-
-.reader-field select {
-  width: auto;
-  min-width: 9rem;
-  margin: 0;
-}
-
-.reader-status {
-  margin: 0.75rem 0 0;
-  font-size: 0.92rem;
-  color: var(--pico-muted-color, #4f6470);
-}
-
-.reader-status-error {
-  color: var(--pico-color-red-500, #dc3545);
-}
-
-.reader-mode-content {
-  margin-top: 0.85rem;
-  padding: 1rem;
-  border-radius: 0.75rem;
-  border: 1px dashed var(--pico-muted-border-color, #c7d4d9);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.reader-sentence-fragment {
-  border-radius: 0.3rem;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
-}
-
-.reader-sentence-fragment:hover,
-.reader-sentence-fragment:focus-visible {
-  background: rgba(16, 149, 193, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(16, 149, 193, 0.18);
-  outline: none;
-}
-
-.reader-sentence-fragment.is-active {
-  background: rgba(255, 236, 170, 0.72);
-  box-shadow: inset 0 0 0 1px rgba(168, 121, 0, 0.16);
-}
-
-.reader-sentence-fragment.is-paused {
-  background: rgba(255, 226, 163, 0.62);
-}
-
-.reader-sentence-fragment.is-read {
-  color: inherit;
-  background: rgba(16, 149, 193, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(16, 149, 193, 0.08);
-}
-
-.reader-passive-block {
-  position: relative;
-}
-
-.reader-passive-block::after {
-  content: "Visible in reader mode, skipped in speech";
-  display: block;
-  margin-top: 0.4rem;
-  font-size: 0.76rem;
-  color: var(--pico-muted-color, #5d727d);
 }
 
 
@@ -942,24 +823,5 @@ article h3, .reader-mode-content h3 {
 
   .empty-state {
     padding: 2rem 1rem;
-  }
-
-  /* Reader mode mobile */
-  .reader-mode-toolbar {
-    align-items: stretch;
-  }
-
-  .reader-control,
-  .reader-field {
-    width: 100%;
-  }
-
-  .reader-field {
-    justify-content: space-between;
-  }
-
-  .reader-field select {
-    min-width: 0;
-    width: 60%;
   }
 }

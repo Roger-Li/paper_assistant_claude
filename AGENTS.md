@@ -83,15 +83,13 @@ For user-facing setup and usage, see [README.md](README.md).
    YAML front matter + the duplicated title/metadata header from stored summaries.
    All edit/regen/narration entry points should use it when loading from disk.
 
-5b. **Browser Reader Mode is separate from generated audio.**
-   - Prefer browser default/local non-novelty voices.
-   - Prefer chunked utterances with sentence highlighting driven by boundary events.
-   - Speech stays scoped to prose blocks — do not read tables, equations, or code verbatim.
-   - Keyboard controls: `K` or `Space` pauses/resumes, `Escape` stops.
-   - Sentence fragments may be focusable/clickable; global playback shortcuts must still work.
-   - Keep `docs/design-browser-reader-mode.md` aligned when changing this feature.
-   - Client-side only — no `index.json`, storage, or API changes unless explicitly requested.
-   - `tts.py` and generated MP3 files remain the source for saved audio/podcast behavior.
+5b. **Browser Reader Mode was removed.** (2026-04-17, roadmap 2d.)
+   The client-side Web Speech feature was dropped because it drifted out of sync
+   with the transcript-backed MLX audio pipeline. The saved MP3 player on the
+   detail page is now the only listen-along path. Do not reintroduce
+   `reader_mode.js`, `#reader-mode` DOM, or `.reader-*` CSS without an explicit
+   product decision. `tts.py` + generated MP3 files remain the source for saved
+   audio/podcast behavior.
 
 6. **FastAPI request models must remain at module level.**
    With `from __future__ import annotations`, nested request-body models break type-hint resolution.
@@ -136,8 +134,7 @@ For user-facing setup and usage, see [README.md](README.md).
 
 - CSS theme uses Pico CSS 2 as base + custom `style.css` with design tokens (`:root` variables prefixed `--pa-*`).
 - Fonts: Fraunces (display/headings, variable with SOFT/WONK axes) + Source Sans 3 (body/UI). Loaded via Google Fonts `@import` in `style.css`.
-- JS-critical selectors: all element IDs, `data-paper-id`, `onclick`/`onchange` handlers, `.reading-status-select`, `.tag-chip` (used in `renderTags()` JS), `.error` (injected via `innerHTML`), all `reader-*` classes. Do not rename or remove these.
-- Reader mode CSS is self-contained — avoid modifying `.reader-*` rules unless specifically requested.
+- JS-critical selectors: all element IDs, `data-paper-id`, `onclick`/`onchange` handlers, `.reading-status-select`, `.tag-chip` (used in `renderTags()` JS), `.error` (injected via `innerHTML`). Do not rename or remove these.
 - Status badge classes follow `status-{value}` pattern matching `ProcessingStatus` enum values in `models.py`.
 - Editable install serves source static files directly; browser cache (`Cmd+Shift+R`) is the usual culprit when CSS changes don't appear.
 
@@ -188,8 +185,6 @@ Target files:
 - `tests/test_audio_script.py` — Claude narration script generation
 - `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
 - `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
-
-Browser Reader Mode: automated coverage at the HTML contract level; manual desktop Brave/Chromium QA for speech events, sentence progression, highlight behavior, and keyboard shortcuts.
 
 ## Definition of Done
 

@@ -20,7 +20,6 @@ Use it from:
 Platform notes:
 - Clipboard import without `--file` uses `pbpaste` (macOS command).
 - On Linux, use `paper-assist import ... --file summary.md`.
-- Browser Reader Mode on the paper detail page is a client-side Web Speech feature, optimized for desktop Brave/Chromium, and it prefers default/local natural voices exposed by the browser. In Reader Mode, technical blocks stay visible, but only prose is read aloud. Use `K` or `Space` to pause/resume and `Escape` to stop. This is still separate from the saved transcript/MLX audio path today.
 
 ## Quick Start (pip + venv)
 
@@ -243,8 +242,6 @@ paper-assist transcript regenerate 2503.10291 --script-file my-script.md
 
 The web UI exposes the same operation via a "Regenerate transcript + audio" button on each paper detail page, and `POST /api/paper/{paper_id}/transcript/regenerate` accepts optional `{"model": ..., "script_markdown": ...}` in the JSON body.
 
-The paper detail page's browser Reader Mode is still a separate Web Speech feature for now. It does not yet render from the saved transcript or inherit MLX/Qwen voice selection; that follow-up is tracked in `docs/roadmap.md`.
-
 ### Using edge-tts instead of MLX
 
 Set `PAPER_ASSIST_TTS_BACKEND=edge` if you prefer edge-tts as the primary backend. MLX remains the default because it keeps audio generation local and avoids the cloud round-trip.
@@ -417,7 +414,6 @@ Features:
 - **Filtering**: filter papers by processing status, reading status, or tag
 - **Bulk tag edits**: from the list page, apply one or more `old => new` tag renames across all local papers; if the target tag already exists on a paper, the tags merge automatically
 - **Reading status**: mark papers as unread/read/archived directly from the list page via inline dropdown
-- **Reader Mode**: on a paper detail page, use browser-native "read from here" playback with sentence highlighting while keeping technical blocks visible; use `K` or `Space` to pause/resume and `Escape` to stop (separate from generated MP3 audio)
 - **Edit summary**: on a paper detail page, click "Edit Summary" to modify the markdown and optionally regenerate audio
 - **Notion sync**: run manual sync (preview/apply) from the list page
 
