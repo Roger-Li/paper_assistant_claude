@@ -214,6 +214,7 @@ def get_tts_backend(config: Config) -> TTSBackend:
             url=config.mlx_tts_url,
             model=config.mlx_tts_model,
             voice=config.mlx_tts_voice,
+            speaker=config.mlx_tts_speaker,
             api_key=config.mlx_tts_api_key,
             speed=config.mlx_tts_speed,
             timeout_s=config.mlx_tts_timeout_s,
@@ -253,6 +254,7 @@ class MlxTTSBackend:
     url: str
     model: str
     voice: str | None = None
+    speaker: str | None = None
     api_key: str | None = None
     speed: float = 1.0
     timeout_s: float = 120.0
@@ -312,14 +314,7 @@ class MlxTTSBackend:
         return output_path
 
     async def _synthesize_single(self, chunk: str) -> tuple[bytes, str]:
-        payload: dict[str, object] = {
-            "model": self.model,
-            "input": chunk,
-            "response_format": self.response_format,
-            "speed": self.speed,
-        }
-        if self.voice:
-            payload["voice"] = self.voice
+        payload = self._build_payload(chunk)
 
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -342,6 +337,33 @@ class MlxTTSBackend:
 
         content_type = resp.headers.get("content-type", "").lower()
         return resp.content, content_type
+
+    def _build_payload(self, chunk: str) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": self.model,
+            "input": chunk,
+            "response_format": self.response_format,
+            "speed": self.speed,
+        }
+
+        if self.voice:
+            payload["voice"] = self.voice
+
+        speaker = self._effective_speaker()
+        if speaker:
+            payload["speaker"] = speaker
+
+        return payload
+
+    def _effective_speaker(self) -> str | None:
+        if self.speaker:
+            return self.speaker
+        if self.voice and self._uses_model_specific_speaker():
+            return self.voice
+        return None
+
+    def _uses_model_specific_speaker(self) -> bool:
+        return "qwen3-tts" in self.model.lower()
 
     def _write_output(
         self,

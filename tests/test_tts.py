@@ -1,6 +1,6 @@
 """Tests for paper_assistant.tts text preparation and backend factory."""
 
-from paper_assistant.config import Config
+from paper_assistant.config import Config, load_config
 from paper_assistant.tts import (
     EdgeTTSBackend,
     MlxTTSBackend,
@@ -145,6 +145,8 @@ class TestGetTtsBackend:
             data_dir=tmp_path,
             mlx_tts_url="http://example.com:9000",
             mlx_tts_model="TestModel",
+            mlx_tts_voice="alloy",
+            mlx_tts_speaker="Ryan",
             mlx_tts_chunk_chars=1234,
             mlx_tts_max_input_chars=5678,
         )
@@ -152,9 +154,19 @@ class TestGetTtsBackend:
         assert isinstance(backend, MlxTTSBackend)
         assert backend.url == "http://example.com:9000"
         assert backend.model == "TestModel"
+        assert backend.voice == "alloy"
+        assert backend.speaker == "Ryan"
         assert backend.chunk_chars == 1234
         assert backend.max_input_chars == 5678
         assert backend.endpoint == "http://example.com:9000/v1/audio/speech"
+
+    def test_load_config_reads_mlx_speaker_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PAPER_ASSIST_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("PAPER_ASSIST_MLX_TTS_SPEAKER", "Ryan")
+
+        config = load_config()
+
+        assert config.mlx_tts_speaker == "Ryan"
 
 
 class TestPrepareTextForTtsFullMarkdown:

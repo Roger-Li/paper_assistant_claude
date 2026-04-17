@@ -50,6 +50,7 @@ class Config(BaseModel):
     mlx_tts_url: str = "http://127.0.0.1:8000"
     mlx_tts_model: str = "Voxtral-4B-TTS-2603-mlx-bf16"
     mlx_tts_voice: str | None = None
+    mlx_tts_speaker: str | None = None
     mlx_tts_api_key: str | None = None
     mlx_tts_timeout_s: float = 120.0
     mlx_tts_chunk_chars: int = 2000
@@ -209,6 +210,10 @@ def load_config(**overrides: object) -> Config:
     mlx_tts_voice = os.getenv("PAPER_ASSIST_MLX_TTS_VOICE")
     if mlx_tts_voice:
         kwargs["mlx_tts_voice"] = mlx_tts_voice
+
+    mlx_tts_speaker = os.getenv("PAPER_ASSIST_MLX_TTS_SPEAKER")
+    if mlx_tts_speaker:
+        kwargs["mlx_tts_speaker"] = mlx_tts_speaker
 
     mlx_tts_api_key = os.getenv("PAPER_ASSIST_MLX_TTS_API_KEY")
     if mlx_tts_api_key:

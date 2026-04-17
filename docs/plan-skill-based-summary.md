@@ -33,7 +33,7 @@ Claude Code                          Codex
        ├── parse sections + save summary
        ├── re-fetch paper (storage invariant)
        ├── generate audio (unless --skip-audio)
-       ├── update RSS + iCloud
+       ├── update RSS
        ├── notion sync (if --sync-notion)
        └── return ImportResult
 ```
@@ -116,9 +116,8 @@ async def import_paper_summary(
 8. **⚠️ Re-fetch paper** (`paper = storage.get_paper(paper_id)`) — **required by storage invariant** (`save_summary` updates a different instance internally; CLAUDE.md invariant 1).
 9. **Generate audio**: Per **Audio Policy** below. On failure, append warning (don't raise).
 10. **Update RSS feed**: `generate_feed()`. On failure, append warning.
-11. **Copy to iCloud**: If audio exists and iCloud enabled.
-12. **Notion sync**: If `sync_notion`, call `sync_notion()` from `notion.py`. On failure, capture error in `ImportResult.notion_error` but don't raise.
-13. **Return `ImportResult`**.
+11. **Notion sync**: If `sync_notion`, call `sync_notion()` from `notion.py`. On failure, capture error in `ImportResult.notion_error` but don't raise.
+12. **Return `ImportResult`**.
 
 ### Force-Merge Policy (`force=True` on existing paper)
 

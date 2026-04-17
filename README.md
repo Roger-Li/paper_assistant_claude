@@ -20,7 +20,6 @@ Use it from:
 Platform notes:
 - Clipboard import without `--file` uses `pbpaste` (macOS command).
 - On Linux, use `paper-assist import ... --file summary.md`.
-- iCloud audio sync is macOS-specific unless you override `PAPER_ASSIST_ICLOUD_DIR`.
 - Browser Reader Mode on the paper detail page is a client-side Web Speech feature, optimized for desktop Brave/Chromium, and it prefers default/local natural voices exposed by the browser. In Reader Mode, technical blocks stay visible, but only prose is read aloud. Use `K` or `Space` to pause/resume and `Escape` to stop. This is still separate from the saved transcript/MLX audio path today.
 
 ## Quick Start (pip + venv)
@@ -66,7 +65,8 @@ Configuration resolution order is:
 | `PAPER_ASSIST_TTS_BACKEND` | No | `mlx` | `mlx` (local server) or `edge` (cloud edge-tts). |
 | `PAPER_ASSIST_MLX_TTS_URL` | No | `http://127.0.0.1:8000` | OpenAI-compatible `/v1/audio/speech` endpoint. |
 | `PAPER_ASSIST_MLX_TTS_MODEL` | No | `Voxtral-4B-TTS-2603-mlx-bf16` | Model name sent to the MLX server. |
-| `PAPER_ASSIST_MLX_TTS_VOICE` | No | none | Optional voice string forwarded to MLX. |
+| `PAPER_ASSIST_MLX_TTS_VOICE` | No | none | Optional generic MLX/OpenAI-style `voice` field. On the current oMLX `/v1/audio/speech` server, this is the main knob for Qwen3-TTS CustomVoice models and should be set to a supported voice ID such as `ryan`. |
+| `PAPER_ASSIST_MLX_TTS_SPEAKER` | No | none | Optional model-specific selector forwarded as `speaker` when the backend/server supports it. Some OpenAI-compatible servers ignore this field and rely on `voice` only. |
 | `PAPER_ASSIST_MLX_TTS_API_KEY` | No | none | Bearer token forwarded to MLX if the server requires auth. |
 | `PAPER_ASSIST_MLX_TTS_TIMEOUT` | No | `120` | Per-request timeout in seconds. |
 | `PAPER_ASSIST_MLX_TTS_CHUNK_CHARS` | No | `2000` | Chunk size for multi-chunk synthesis. |
@@ -74,8 +74,6 @@ Configuration resolution order is:
 | `PAPER_ASSIST_MLX_TTS_SPEED` | No | `1.0` | Playback speed forwarded to MLX. |
 | `PAPER_ASSIST_TTS_EDGE_FALLBACK` | No | `true` | Fall back to edge-tts when MLX fails with a transient error. |
 | `PAPER_ASSIST_AUDIO_SCRIPT_MODEL` | No | `claude-haiku-4-5-20251001` | Claude model used to rewrite the stored summary into a spoken narration script. |
-| `PAPER_ASSIST_ICLOUD_SYNC` | No | `true` | `true/1/yes` enables iCloud audio copy. |
-| `PAPER_ASSIST_ICLOUD_DIR` | No | `~/Library/Mobile Documents/com~apple~CloudDocs/Paper Assistant` | iCloud destination folder. |
 | `PAPER_ASSIST_ARXIV_USER_AGENT` | No | `paper-assistant/0.1 (...)` | Set app name + contact email for arXiv API requests. |
 | `PAPER_ASSIST_ARXIV_MAX_RETRIES` | No | `6` | Retry attempts for arXiv `429`, `5xx`, and transient network errors. |
 | `PAPER_ASSIST_ARXIV_BACKOFF_BASE_SECONDS` | No | `2.0` | Base delay for exponential backoff (with jitter). |
@@ -215,7 +213,20 @@ Paper Assistant generates audio in two stages: first, Claude rewrites the stored
 paper-assist tts check
 ```
 
-This probes `/v1/models`, synthesizes a one-sentence sample, and reports timing/size/backend. The command exits non-zero on configuration errors so CI can gate on it.
+This probes `/v1/models`, synthesizes a one-sentence sample, and reports timing/size/backend. For MLX, it also prints the generic `voice` and the optional model-specific `speaker` selector that the client would send. The command exits non-zero on configuration errors so CI can gate on it.
+
+### Choosing MLX `voice` vs `speaker`
+
+- `PAPER_ASSIST_MLX_TTS_VOICE` is the generic OpenAI-compatible selector. This is the right knob for servers/models that expose a plain `voice` field.
+- On the current oMLX server, Qwen3-TTS CustomVoice uses `voice`, not a separate public `speaker` field. Use one of the server-supported IDs such as `ryan`, `serena`, `vivian`, `aiden`, or `dylan`.
+- `PAPER_ASSIST_MLX_TTS_SPEAKER` is only for backends that explicitly support a separate `speaker` field. Paper Assistant still forwards it when configured, but some servers ignore it.
+
+Example:
+
+```bash
+export PAPER_ASSIST_MLX_TTS_MODEL=Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit
+export PAPER_ASSIST_MLX_TTS_VOICE=ryan
+```
 
 ### Regenerate narration + audio
 
@@ -553,12 +564,6 @@ A 4xx from the MLX server is treated as a misconfiguration — Paper Assistant d
 ### iPhone cannot play feed from `127.0.0.1`
 
 `127.0.0.1` is only local to your Mac. If you need phone access, run server on reachable network host (or tunnel) and regenerate feed.
-
-### iCloud sync warnings
-
-If iCloud path is unavailable, either:
-- disable with `PAPER_ASSIST_ICLOUD_SYNC=false`
-- or set a valid `PAPER_ASSIST_ICLOUD_DIR`
 
 ### Notion sync `400 Bad Request`
 

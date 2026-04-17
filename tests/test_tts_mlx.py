@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -202,3 +204,57 @@ async def test_bearer_header_sent_when_api_key_set(tmp_path):
 
     assert route.called
     assert route.calls[0].request.headers.get("authorization") == "Bearer secret-token"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_generic_voice_forwarded_without_speaker_for_non_qwen_model(tmp_path):
+    backend = _backend(model="Voxtral-4B-TTS-2603-mlx-bf16", voice="alloy")
+    route = respx.post("http://mlx.local:8000/v1/audio/speech").mock(
+        return_value=httpx.Response(
+            200, content=_mp3_bytes(), headers={"content-type": "audio/mpeg"}
+        )
+    )
+
+    await backend.synthesize("hi", tmp_path / "out.mp3")
+
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["voice"] == "alloy"
+    assert "speaker" not in payload
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_qwen_model_mirrors_voice_into_speaker_when_unset(tmp_path):
+    backend = _backend(
+        model="mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+        voice="Ryan",
+    )
+    route = respx.post("http://mlx.local:8000/v1/audio/speech").mock(
+        return_value=httpx.Response(
+            200, content=_mp3_bytes(), headers={"content-type": "audio/mpeg"}
+        )
+    )
+
+    await backend.synthesize("hi", tmp_path / "out.mp3")
+
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["voice"] == "Ryan"
+    assert payload["speaker"] == "Ryan"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_explicit_speaker_is_forwarded_separately(tmp_path):
+    backend = _backend(voice="alloy", speaker="Ryan")
+    route = respx.post("http://mlx.local:8000/v1/audio/speech").mock(
+        return_value=httpx.Response(
+            200, content=_mp3_bytes(), headers={"content-type": "audio/mpeg"}
+        )
+    )
+
+    await backend.synthesize("hi", tmp_path / "out.mp3")
+
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["voice"] == "alloy"
+    assert payload["speaker"] == "Ryan"

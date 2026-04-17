@@ -9,7 +9,6 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 ## Active / Remaining
 
 2. `regenerate-audio` command (`single` and `--all`) for imported/legacy entries. (`paper-assist transcript regenerate <paper_id>` covers the single-paper path via `docs/plan-audio-friendly-readout.md`; a `--all` batch path is still open.)
-2c. [BUG] MLX/Qwen speaker drift in generated audio. The current MLX payload forwards a generic `voice` field, but some OMLX-served models (for example Qwen3-TTS) appear to select or drift between different speakers unless the correct model-specific speaker parameter is pinned. Follow-up: confirm the server's supported control surface, send the right stable speaker/voice argument on every chunk, and document which settings are generic MLX vs model-specific.
 2d. [BUG] Web Reader Mode is now out of sync with transcript-backed audio. The detail page still reads browser-side summary prose with browser voice/rate controls, while saved audio now comes from `transcripts/{paper_id}.md` synthesized on the MLX server. Follow-up: rebase Reader Mode on the saved transcript + generated MP3, remove browser voice selection, and decide how sentence progress/highlighting is derived without server timing metadata.
 3. Notion sync upload retries. (Formatting and nested lists done; upload retries remain.)
 4. Reachable podcast feed for phone clients (LAN/tunnel/hosted URL strategy).
@@ -27,6 +26,7 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 
 1. ~~Sorting entries by tag/date added/title; editing existing summaries.~~
 2b. ~~Skill-driven transcript generation — host agent produces the narration script artifact, and import surfaces can opt out of Anthropic script fallback.~~ (See `docs/plan-skill-driven-transcript.md`)
+2c. ~~[BUG] MLX/Qwen speaker drift in generated audio.~~ MLX now forwards the generic `voice` selector on every chunk and can also forward a model-specific `speaker` when the backend supports it. The docs now spell out that the current oMLX Qwen3-TTS CustomVoice server relies on supported `voice` IDs such as `ryan`.
 3a. ~~Notion sync fidelity — formatting and nested lists.~~
 7. ~~Non-arXiv web articles.~~ (See `docs/design-web-article-support.md`)
 12a. ~~`SourceType.NOTE` + `paper-assist create` command + local note web/API flow.~~

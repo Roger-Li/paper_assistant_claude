@@ -1497,6 +1497,15 @@ async def _tts_check(obj: dict) -> None:
         url = config.mlx_tts_url.rstrip("/")
         console.print(f"  MLX url: {url}")
         console.print(f"  MLX model: {config.mlx_tts_model}")
+        if config.mlx_tts_voice:
+            console.print(f"  MLX voice (generic): {config.mlx_tts_voice}")
+        if config.mlx_tts_speaker:
+            console.print(f"  MLX speaker (optional/model-specific): {config.mlx_tts_speaker}")
+        elif config.mlx_tts_voice and "qwen3-tts" in config.mlx_tts_model.lower():
+            console.print(
+                "  MLX speaker (optional/model-specific): "
+                f"{config.mlx_tts_voice} [dim](mirrored from MLX voice when the server supports a separate `speaker` field)[/dim]"
+            )
 
         models_url = f"{url}/v1/models"
         headers = {}
