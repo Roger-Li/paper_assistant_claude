@@ -17,19 +17,19 @@ from paper_assistant.arxiv import (
     fetch_metadata as fetch_arxiv_metadata,
     parse_arxiv_url,
 )
+from paper_assistant.audio_assets import render_audio_assets
 from paper_assistant.config import Config
 from paper_assistant.hf_papers import fetch_metadata as fetch_hf_metadata
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, SourceType
 from paper_assistant.notion import sync_notion as run_notion_sync
 from paper_assistant.podcast import generate_feed
-from paper_assistant.storage import StorageManager, make_audio_filename
+from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import (
     SummarizationResult,
     find_one_pager,
     format_summary_file,
     parse_summary_sections,
 )
-from paper_assistant.tts import prepare_text_for_tts, text_to_speech
 from paper_assistant.web_article import fetch_article, is_arxiv_url, slugify_title
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ class ImportResult:
     notion_synced: bool
     notion_error: str | None
     warnings: list[str] = field(default_factory=list)
+    transcript_path: Path | None = None
+    backend_used: str | None = None
 
 
 async def create_local_entry(
@@ -74,6 +76,7 @@ async def create_local_entry(
     source_url: str | None = None,
     tags: list[str] | None = None,
     skip_audio: bool = False,
+    skip_transcript: bool = False,
 ) -> LocalEntryResult:
     """Create a local markdown-backed note entry without fetching remote content."""
     clean_title = title.strip()
@@ -118,26 +121,16 @@ async def create_local_entry(
 
     warnings: list[str] = []
 
-    if not skip_audio:
-        try:
-            tts_text = prepare_text_for_tts(
-                markdown,
-                metadata.title,
-                metadata.authors,
-                source_label=metadata.source_label,
-            )
-            audio_path = config.audio_dir / make_audio_filename(paper_id)
-            await text_to_speech(
-                tts_text,
-                audio_path,
-                config.tts_voice,
-                config.tts_rate,
-            )
-            paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-            paper.status = ProcessingStatus.AUDIO_GENERATED
-            storage.add_paper(paper)
-        except Exception as exc:
-            warnings.append(f"Audio generation failed: {exc}")
+    audio_result = await render_audio_assets(
+        config=config,
+        storage=storage,
+        paper=paper,
+        source_markdown=markdown,
+        skip_transcript=skip_transcript,
+        skip_audio=skip_audio,
+    )
+    warnings.extend(audio_result.warnings)
+    paper = storage.get_paper(paper_id) or paper
 
     try:
         from paper_assistant.podcast import generate_feed
@@ -175,8 +168,11 @@ async def import_paper_summary(
     model: str = "manual",
     tags: list[str] | None = None,
     skip_audio: bool = False,
+    skip_transcript: bool = False,
     force: bool = False,
     sync_notion: bool = False,
+    provided_script_markdown: str | None = None,
+    script_model_override: str | None = None,
 ) -> ImportResult:
     """Import a pre-generated summary through the shared pipeline."""
     config.ensure_dirs()
@@ -215,6 +211,7 @@ async def import_paper_summary(
         result=result,
         existing=existing if force else None,
         skip_audio=skip_audio,
+        skip_transcript=skip_transcript,
     )
     storage.add_paper(paper)
 
@@ -225,17 +222,18 @@ async def import_paper_summary(
     paper = storage.get_paper(paper_id) or paper
     warnings: list[str] = []
 
-    if not skip_audio:
-        try:
-            await _generate_audio_for_import(
-                config=config,
-                storage=storage,
-                paper=paper,
-                markdown=markdown,
-            )
-            paper = storage.get_paper(paper_id) or paper
-        except Exception as exc:
-            warnings.append(f"Audio generation failed: {exc}")
+    audio_result = await render_audio_assets(
+        config=config,
+        storage=storage,
+        paper=paper,
+        source_markdown=markdown,
+        skip_transcript=skip_transcript,
+        skip_audio=skip_audio,
+        provided_script_markdown=provided_script_markdown,
+        script_model_override=script_model_override,
+    )
+    warnings.extend(audio_result.warnings)
+    paper = storage.get_paper(paper_id) or paper
 
     try:
         generate_feed(config, storage.list_papers())
@@ -282,6 +280,11 @@ async def import_paper_summary(
         if final_paper.audio_path
         else None
     )
+    transcript_path = (
+        config.data_dir / final_paper.transcript_path
+        if final_paper.transcript_path
+        else None
+    )
 
     return ImportResult(
         paper_id=paper_id,
@@ -292,6 +295,8 @@ async def import_paper_summary(
         notion_synced=notion_synced,
         notion_error=notion_error,
         warnings=warnings,
+        transcript_path=transcript_path,
+        backend_used=audio_result.backend_used,
     )
 
 
@@ -499,6 +504,7 @@ def _build_import_paper(
     result: SummarizationResult,
     existing: Paper | None,
     skip_audio: bool,
+    skip_transcript: bool,
 ) -> Paper:
     token_count = result.input_tokens + result.output_tokens
 
@@ -512,6 +518,15 @@ def _build_import_paper(
             error_message=None,
         )
 
+    # Force × skip preservation rules (invariant 1d + plan §5):
+    # - skip_audio is the master switch: preserve both audio and transcript
+    # - skip_transcript alone: preserve transcript; regen audio from raw summary
+    # - neither set: clear both so the render helper regenerates them
+    preserved_audio = existing.audio_path if skip_audio else None
+    preserved_transcript = (
+        existing.transcript_path if (skip_audio or skip_transcript) else None
+    )
+
     return Paper(
         metadata=metadata,
         date_added=existing.date_added,
@@ -523,7 +538,8 @@ def _build_import_paper(
         last_synced_at=existing.last_synced_at,
         archived_at=existing.archived_at,
         notion_page_id=existing.notion_page_id,
-        audio_path=existing.audio_path if skip_audio else None,
+        audio_path=preserved_audio,
+        transcript_path=preserved_transcript,
         model_used=model,
         token_count=token_count,
         error_message=None,
@@ -538,33 +554,6 @@ def _merge_tags(existing_tags: list[str], new_tags: list[str]) -> list[str]:
     return merged
 
 
-async def _generate_audio_for_import(
-    *,
-    config: Config,
-    storage: StorageManager,
-    paper: Paper,
-    markdown: str,
-) -> Path:
-    paper_id = paper.metadata.paper_id
-    tts_text = prepare_text_for_tts(
-        markdown,
-        paper.metadata.title,
-        paper.metadata.authors,
-        source_label=paper.metadata.source_label,
-    )
-    audio_path = config.audio_dir / make_audio_filename(paper_id)
-    await text_to_speech(
-        tts_text,
-        audio_path,
-        config.tts_voice,
-        config.tts_rate,
-    )
-    paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-    paper.status = ProcessingStatus.AUDIO_GENERATED
-    storage.add_paper(paper)
-    return audio_path
-
-
 def _copy_audio_to_icloud(*, config: Config, paper: Paper) -> Path:
     if not paper.audio_path:
         raise ValueError("Paper has no audio_path to copy to iCloud.")
@@ -574,3 +563,95 @@ def _copy_audio_to_icloud(*, config: Config, paper: Paper) -> Path:
     destination = config.icloud_dir / f"{safe_title} [{paper.metadata.paper_id}].mp3"
     shutil.copy2(config.data_dir / paper.audio_path, destination)
     return destination
+
+
+@dataclass
+class TranscriptRegenerateResult:
+    paper_id: str
+    title: str
+    transcript_path: Path | None
+    audio_path: Path | None
+    script_model: str | None
+    backend_used: str | None
+    warnings: list[str] = field(default_factory=list)
+
+
+async def regenerate_transcript_and_audio(
+    *,
+    config: Config,
+    storage: StorageManager,
+    paper_id: str,
+    provided_script_markdown: str | None = None,
+    script_model_override: str | None = None,
+) -> TranscriptRegenerateResult:
+    """Regenerate narration transcript + audio for an existing paper.
+
+    Loads the stored summary, normalizes the body via
+    ``summarizer.normalize_summary_body``, and routes through
+    :func:`render_audio_assets`. Never raises upward.
+    """
+    from paper_assistant.summarizer import normalize_summary_body
+
+    paper = storage.get_paper(paper_id)
+    if paper is None:
+        raise KeyError(f"Paper {paper_id} not found")
+
+    warnings: list[str] = []
+
+    if not paper.summary_path:
+        raise ValueError(f"Paper {paper_id} has no summary to narrate.")
+
+    summary_file = config.data_dir / paper.summary_path
+    if not summary_file.exists():
+        raise ValueError(f"Summary file missing for {paper_id}.")
+
+    raw = summary_file.read_text(encoding="utf-8")
+    source_markdown = normalize_summary_body(raw)
+
+    audio_result = await render_audio_assets(
+        config=config,
+        storage=storage,
+        paper=paper,
+        source_markdown=source_markdown,
+        skip_transcript=False,
+        skip_audio=False,
+        provided_script_markdown=provided_script_markdown,
+        script_model_override=script_model_override,
+    )
+    warnings.extend(audio_result.warnings)
+
+    final_paper = storage.get_paper(paper_id) or paper
+    if final_paper.audio_path and final_paper.status != ProcessingStatus.COMPLETE:
+        final_paper.status = ProcessingStatus.COMPLETE
+        storage.add_paper(final_paper)
+        final_paper = storage.get_paper(paper_id) or final_paper
+
+    # Refresh feed so the new audio is picked up; failure non-critical.
+    try:
+        generate_feed(config, storage.list_papers())
+    except Exception as exc:
+        warnings.append(f"Feed regeneration failed: {exc}")
+
+    if final_paper.audio_path and config.icloud_sync:
+        try:
+            _copy_audio_to_icloud(config=config, paper=final_paper)
+        except Exception as exc:
+            warnings.append(f"iCloud copy failed: {exc}")
+
+    return TranscriptRegenerateResult(
+        paper_id=paper_id,
+        title=final_paper.metadata.title,
+        transcript_path=(
+            config.data_dir / final_paper.transcript_path
+            if final_paper.transcript_path
+            else None
+        ),
+        audio_path=(
+            config.data_dir / final_paper.audio_path
+            if final_paper.audio_path
+            else None
+        ),
+        script_model=audio_result.script_model,
+        backend_used=audio_result.backend_used,
+        warnings=warnings,
+    )

@@ -5,6 +5,7 @@ from paper_assistant.summarizer import (
     SummarizationResult,
     find_one_pager,
     format_summary_file,
+    normalize_summary_body,
     parse_summary_sections,
 )
 
@@ -121,3 +122,34 @@ class TestFormatSummaryFile:
         assert "source_slug: local-note" in formatted
         assert "**Authors**" not in formatted
         assert "**Source**" not in formatted
+
+
+class TestNormalizeSummaryBody:
+    def test_strips_yaml_and_title_header(self):
+        metadata = PaperMetadata(arxiv_id="2503.10291", title="Test Paper", authors=["Alice"])
+        body = "# One-Pager\nMain content here."
+        summary = SummarizationResult(full_markdown=body, one_pager=body, sections={})
+        formatted = format_summary_file(metadata, summary)
+
+        cleaned = normalize_summary_body(formatted)
+
+        assert "---" not in cleaned.splitlines()[:3]
+        assert cleaned.lstrip().startswith("# One-Pager")
+        assert "Main content here." in cleaned
+
+    def test_body_without_frontmatter_untouched(self):
+        body = "# One-Pager\nJust a body."
+        assert normalize_summary_body(body).strip() == body.strip()
+
+    def test_strips_only_yaml_when_no_title_header(self):
+        raw = "---\npaper_id: x\n---\n\n# One-Pager\nBody"
+        cleaned = normalize_summary_body(raw)
+        assert cleaned.startswith("# One-Pager")
+
+    def test_does_not_strip_late_horizontal_rule(self):
+        # A \n---\n past 400 chars must not be stripped (it's real content).
+        padding = "Line of prose. " * 40  # > 400 chars
+        raw = f"# One-Pager\n{padding}\n---\nTrailing section"
+        cleaned = normalize_summary_body(raw)
+        assert "Trailing section" in cleaned
+        assert "---" in cleaned

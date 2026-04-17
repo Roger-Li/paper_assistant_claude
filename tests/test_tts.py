@@ -1,6 +1,14 @@
-"""Tests for paper_assistant.tts text preparation."""
+"""Tests for paper_assistant.tts text preparation and backend factory."""
 
-from paper_assistant.tts import prepare_text_for_tts
+from paper_assistant.config import Config
+from paper_assistant.tts import (
+    EdgeTTSBackend,
+    MlxTTSBackend,
+    get_tts_backend,
+    prepare_script_for_tts,
+    prepare_text_for_tts,
+    split_into_chunks,
+)
 
 
 class TestPrepareTextForTts:
@@ -70,6 +78,86 @@ class TestPrepareTextForTts:
         text = prepare_text_for_tts("A\n\n\n\n\nB", "T", ["A"])
         assert "\n\n\n" not in text
 
+class TestPrepareScriptForTts:
+    def test_no_intro_prepended(self):
+        script = "Today we're looking at VisualPRM. The authors tackle reward modeling."
+        out = prepare_script_for_tts(script)
+        assert out.startswith("Today we're looking at VisualPRM.")
+        assert "summary of the paper" not in out
+
+    def test_script_untouched_when_clean(self):
+        script = "This is a clean narration paragraph. No markdown at all."
+        assert prepare_script_for_tts(script) == script
+
+    def test_markdown_markers_stripped(self):
+        script = "# Header\nWe cover **bold** ideas and `code` inline."
+        out = prepare_script_for_tts(script)
+        assert "**" not in out
+        assert "#" not in out
+        assert "`" not in out
+        assert "bold" in out
+        assert "code" in out
+
+    def test_display_math_not_labeled_omitted(self):
+        # prepare_script_for_tts uses replace_equations=False — the script
+        # already paraphrases math, so just drop display blocks silently.
+        script = "We define $$E = mc^2$$ and discuss its meaning."
+        out = prepare_script_for_tts(script)
+        assert "$$" not in out
+        assert "(equation omitted)" not in out
+
+
+class TestSplitIntoChunks:
+    def test_single_sentence_below_limit(self):
+        chunks = split_into_chunks("One sentence here.", 100)
+        assert chunks == ["One sentence here."]
+
+    def test_splits_on_sentence_boundaries(self):
+        text = "First sentence. Second sentence. Third sentence."
+        chunks = split_into_chunks(text, 25)
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert len(chunk) <= 25
+
+    def test_oversized_single_sentence_hard_split(self):
+        word = "a" * 60
+        chunks = split_into_chunks(word, 20)
+        assert all(len(c) <= 20 for c in chunks)
+        assert "".join(chunks) == word
+
+
+class TestGetTtsBackend:
+    def test_returns_mlx_by_default(self, tmp_path):
+        config = Config(anthropic_api_key="k", data_dir=tmp_path)
+        backend = get_tts_backend(config)
+        assert isinstance(backend, MlxTTSBackend)
+        assert backend.name == "mlx"
+
+    def test_returns_edge_when_configured(self, tmp_path):
+        config = Config(anthropic_api_key="k", data_dir=tmp_path, tts_backend="edge")
+        backend = get_tts_backend(config)
+        assert isinstance(backend, EdgeTTSBackend)
+        assert backend.name == "edge"
+
+    def test_mlx_backend_uses_config_values(self, tmp_path):
+        config = Config(
+            anthropic_api_key="k",
+            data_dir=tmp_path,
+            mlx_tts_url="http://example.com:9000",
+            mlx_tts_model="TestModel",
+            mlx_tts_chunk_chars=1234,
+            mlx_tts_max_input_chars=5678,
+        )
+        backend = get_tts_backend(config)
+        assert isinstance(backend, MlxTTSBackend)
+        assert backend.url == "http://example.com:9000"
+        assert backend.model == "TestModel"
+        assert backend.chunk_chars == 1234
+        assert backend.max_input_chars == 5678
+        assert backend.endpoint == "http://example.com:9000/v1/audio/speech"
+
+
+class TestPrepareTextForTtsFullMarkdown:
     def test_full_markdown_input(self):
         md = """# One-Pager Summary
 

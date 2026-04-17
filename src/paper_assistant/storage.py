@@ -36,6 +36,11 @@ def make_audio_filename(paper_id: str) -> str:
     return f"{paper_id}.mp3"
 
 
+def make_transcript_filename(paper_id: str) -> str:
+    """Generate narration transcript filename. Example: 2503.10291.md"""
+    return f"{paper_id}.md"
+
+
 def make_pdf_filename(paper_id: str) -> str:
     """Generate PDF cache filename. Example: 2503.10291.pdf"""
     return f"{paper_id}.pdf"
@@ -129,7 +134,12 @@ class StorageManager:
             return False
 
         if delete_files:
-            for rel_path in [paper.summary_path, paper.audio_path, paper.pdf_path]:
+            for rel_path in [
+                paper.summary_path,
+                paper.audio_path,
+                paper.transcript_path,
+                paper.pdf_path,
+            ]:
                 if rel_path:
                     full_path = self.config.data_dir / rel_path
                     if full_path.exists():
@@ -351,6 +361,22 @@ class StorageManager:
 
         paper.audio_path = f"audio/{filename}"
         paper.status = ProcessingStatus.AUDIO_GENERATED
+        self.save_index()
+
+        return full_path
+
+    def save_transcript(self, paper_id: str, content: str) -> Path:
+        """Write narration transcript markdown and update paper's transcript_path."""
+        paper = self.get_paper(paper_id)
+        if paper is None:
+            raise KeyError(f"Paper {paper_id} not in index")
+
+        filename = make_transcript_filename(paper_id)
+        self.config.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        full_path = self.config.transcripts_dir / filename
+        full_path.write_text(content, encoding="utf-8")
+
+        paper.transcript_path = f"transcripts/{filename}"
         self.save_index()
 
         return full_path

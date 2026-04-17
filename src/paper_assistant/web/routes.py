@@ -20,6 +20,7 @@ class ImportRequest(BaseModel):
     markdown: str
     tags: list[str] = Field(default_factory=list)
     skip_audio: bool = False
+    skip_transcript: bool = False
 
 
 class CreateRequest(BaseModel):
@@ -28,6 +29,12 @@ class CreateRequest(BaseModel):
     source_url: str | None = None
     tags: list[str] = Field(default_factory=list)
     skip_audio: bool = False
+    skip_transcript: bool = False
+
+
+class TranscriptRegenerateRequest(BaseModel):
+    model: str | None = None
+    script_markdown: str | None = None
 
 
 class TagsRequest(BaseModel):
@@ -150,19 +157,23 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         )
 
     @router.post("/api/add")
-    async def api_add_paper(url: str, skip_audio: bool = False, tags: list[str] | None = None):
+    async def api_add_paper(
+        url: str,
+        skip_audio: bool = False,
+        skip_transcript: bool = False,
+        tags: list[str] | None = None,
+    ):
         """API endpoint to add a paper or web article (triggers the full pipeline)."""
         if not config.anthropic_api_key:
             return {"error": "ANTHROPIC_API_KEY is required for summarization."}
 
+        from paper_assistant.audio_assets import render_audio_assets
         from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.podcast import generate_feed
-        from paper_assistant.storage import make_audio_filename
-        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
         from paper_assistant.web_article import is_arxiv_url
 
         if is_arxiv_url(url):
-            return await _api_add_arxiv(url, skip_audio, tags)
+            return await _api_add_arxiv(url, skip_audio, skip_transcript, tags)
 
         # Web article path
         from paper_assistant.summarizer import format_summary_file, summarize_article_text
@@ -182,21 +193,20 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             summary_content = format_summary_file(metadata, result)
             storage.save_summary(paper_id, summary_content)
             paper = storage.get_paper(paper_id)
-
-            if not skip_audio:
-                tts_text = prepare_text_for_tts(
-                    result.full_markdown, metadata.title, metadata.authors,
-                    source_label=metadata.source_label,
-                )
-                audio_path = config.audio_dir / make_audio_filename(paper_id)
-                await text_to_speech(
-                    tts_text, audio_path, config.tts_voice, config.tts_rate
-                )
-                paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-
-            paper.status = ProcessingStatus.COMPLETE
             paper.model_used = result.model_used
             paper.token_count = result.input_tokens + result.output_tokens
+            storage.add_paper(paper)
+
+            audio_result = await render_audio_assets(
+                config=config,
+                storage=storage,
+                paper=paper,
+                source_markdown=result.full_markdown,
+                skip_transcript=skip_transcript,
+                skip_audio=skip_audio,
+            )
+            paper = storage.get_paper(paper_id) or paper
+            paper.status = ProcessingStatus.COMPLETE
             storage.add_paper(paper)
 
             all_papers = storage.list_papers()
@@ -208,21 +218,37 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 except Exception:
                     logger.warning("Search index update failed for %s", paper_id)
 
-            return {
+            response = {
                 "status": "ok",
                 "paper_id": paper_id,
                 "title": metadata.title,
+                "transcript_path": (
+                    f"transcripts/{paper_id}.md"
+                    if paper.transcript_path
+                    else None
+                ),
+                "audio_path": paper.audio_path,
+                "backend_used": audio_result.backend_used,
             }
+            if audio_result.warnings:
+                response["warnings"] = audio_result.warnings
+            return response
         except Exception as e:
             return {"error": str(e)}
 
-    async def _api_add_arxiv(url: str, skip_audio: bool, tags: list[str] | None):
+    async def _api_add_arxiv(
+        url: str,
+        skip_audio: bool,
+        skip_transcript: bool,
+        tags: list[str] | None,
+    ):
         """Internal: add an arXiv paper via the full pipeline."""
         from paper_assistant.arxiv import (
             download_pdf,
             fetch_metadata as fetch_arxiv_metadata,
             parse_arxiv_url,
         )
+        from paper_assistant.audio_assets import render_audio_assets
         from paper_assistant.hf_papers import (
             fetch_markdown_body as fetch_hf_markdown_body,
             fetch_metadata as fetch_hf_metadata,
@@ -230,9 +256,8 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         from paper_assistant.models import Paper, ProcessingStatus
         from paper_assistant.pdf import extract_text_from_pdf
         from paper_assistant.podcast import generate_feed
-        from paper_assistant.storage import make_audio_filename, make_pdf_filename
+        from paper_assistant.storage import make_pdf_filename
         from paper_assistant.summarizer import format_summary_file, summarize_paper_text
-        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
 
         try:
             arxiv_id = parse_arxiv_url(url)
@@ -268,20 +293,20 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             summary_content = format_summary_file(metadata, result)
             storage.save_summary(arxiv_id, summary_content)
             paper = storage.get_paper(arxiv_id)
-
-            if not skip_audio:
-                tts_text = prepare_text_for_tts(
-                    result.full_markdown, metadata.title, metadata.authors
-                )
-                audio_path = config.audio_dir / make_audio_filename(arxiv_id)
-                await text_to_speech(
-                    tts_text, audio_path, config.tts_voice, config.tts_rate
-                )
-                paper.audio_path = f"audio/{make_audio_filename(arxiv_id)}"
-
-            paper.status = ProcessingStatus.COMPLETE
             paper.model_used = result.model_used
             paper.token_count = result.input_tokens + result.output_tokens
+            storage.add_paper(paper)
+
+            audio_result = await render_audio_assets(
+                config=config,
+                storage=storage,
+                paper=paper,
+                source_markdown=result.full_markdown,
+                skip_transcript=skip_transcript,
+                skip_audio=skip_audio,
+            )
+            paper = storage.get_paper(arxiv_id) or paper
+            paper.status = ProcessingStatus.COMPLETE
             storage.add_paper(paper)
 
             all_papers = storage.list_papers()
@@ -293,11 +318,21 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 except Exception:
                     logger.warning("Search index update failed for %s", arxiv_id)
 
-            return {
+            response = {
                 "status": "ok",
                 "paper_id": arxiv_id,
                 "title": metadata.title,
+                "transcript_path": (
+                    f"transcripts/{arxiv_id}.md"
+                    if paper.transcript_path
+                    else None
+                ),
+                "audio_path": paper.audio_path,
+                "backend_used": audio_result.backend_used,
             }
+            if audio_result.warnings:
+                response["warnings"] = audio_result.warnings
+            return response
         except Exception as e:
             return {"error": str(e)}
 
@@ -315,13 +350,23 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 model="manual",
                 tags=req.tags,
                 skip_audio=req.skip_audio,
+                skip_transcript=req.skip_transcript,
             )
         except DuplicatePaperError as e:
             return {"error": str(e), "paper_id": e.paper_id}
         except Exception as e:
             return {"error": str(e)}
 
-        response = {"status": "ok", "paper_id": result.paper_id, "title": result.title}
+        response = {
+            "status": "ok",
+            "paper_id": result.paper_id,
+            "title": result.title,
+            "transcript_path": (
+                str(result.transcript_path) if result.transcript_path else None
+            ),
+            "audio_path": str(result.audio_path) if result.audio_path else None,
+            "backend_used": result.backend_used,
+        }
         if result.warnings:
             response["warnings"] = result.warnings
         return response
@@ -340,6 +385,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 source_url=req.source_url,
                 tags=req.tags,
                 skip_audio=req.skip_audio,
+                skip_transcript=req.skip_transcript,
             )
         except Exception as e:
             return {"error": str(e)}
@@ -348,6 +394,8 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             "status": "ok",
             "paper_id": outcome.paper.metadata.paper_id,
             "title": outcome.paper.metadata.title,
+            "transcript_path": outcome.paper.transcript_path,
+            "audio_path": outcome.paper.audio_path,
         }
         if outcome.warnings:
             response["warnings"] = outcome.warnings
@@ -576,6 +624,8 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.get("/api/paper/{paper_id:path}/summary")
     async def api_get_summary(paper_id: str):
         """Get the raw markdown summary body for editing."""
+        from paper_assistant.summarizer import normalize_summary_body
+
         paper = storage.get_paper(paper_id)
         if paper is None:
             return {"error": f"Paper {paper_id} not found"}
@@ -588,34 +638,20 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": "Summary file missing", "markdown": ""}
 
         raw = summary_path.read_text(encoding="utf-8")
-
-        # Strip YAML front matter and title/authors header block
-        # (format_summary_file regenerates these on save)
-        body = raw
-        if body.startswith("---"):
-            end_idx = body.find("---", 3)
-            if end_idx != -1:
-                body = body[end_idx + 3 :].lstrip()
-
-        hr_idx = body.find("\n---\n")
-        if hr_idx != -1 and hr_idx < 400:
-            body = body[hr_idx + 5 :].lstrip()
-
-        return {"markdown": body}
+        return {"markdown": normalize_summary_body(raw)}
 
     @router.put("/api/paper/{paper_id:path}/summary")
     async def api_update_summary(paper_id: str, req: UpdateSummaryRequest):
         """Update a paper's summary and optionally regenerate audio."""
+        from paper_assistant.audio_assets import render_audio_assets
         from paper_assistant.models import ProcessingStatus
         from paper_assistant.podcast import generate_feed
-        from paper_assistant.storage import make_audio_filename
         from paper_assistant.summarizer import (
             SummarizationResult,
             find_one_pager,
             format_summary_file,
             parse_summary_sections,
         )
-        from paper_assistant.tts import prepare_text_for_tts, text_to_speech
 
         paper = storage.get_paper(paper_id)
         if paper is None:
@@ -624,7 +660,6 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         if not req.markdown.strip():
             return {"error": "Summary cannot be empty"}
 
-        # Save the updated summary
         try:
             sections = parse_summary_sections(req.markdown)
             one_pager = find_one_pager(sections)
@@ -636,33 +671,23 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             )
             summary_content = format_summary_file(paper.metadata, result)
             storage.save_summary(paper_id, summary_content)
-            paper = storage.get_paper(paper_id)  # Re-fetch after save_summary
+            paper = storage.get_paper(paper_id)
         except Exception as e:
             return {"error": f"Failed to save summary: {e}"}
 
-        # Optionally regenerate audio (graceful degradation)
-        audio_warning = None
-        if req.regenerate_audio:
-            try:
-                tts_text = prepare_text_for_tts(
-                    req.markdown, paper.metadata.title, paper.metadata.authors,
-                    source_label=paper.metadata.source_label,
-                )
-                audio_path = config.audio_dir / make_audio_filename(paper_id)
-                await text_to_speech(
-                    tts_text, audio_path, config.tts_voice, config.tts_rate
-                )
-                paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-                paper.status = ProcessingStatus.COMPLETE
-                storage.add_paper(paper)
-            except Exception as e:
-                audio_warning = f"Summary saved but audio regeneration failed: {e}"
-        elif paper.audio_path:
-            # Preserve COMPLETE status when skipping audio regen for papers that had audio
+        audio_result = await render_audio_assets(
+            config=config,
+            storage=storage,
+            paper=paper,
+            source_markdown=req.markdown,
+            skip_transcript=not req.regenerate_audio,
+            skip_audio=not req.regenerate_audio,
+        )
+        paper = storage.get_paper(paper_id) or paper
+        if paper.audio_path:
             paper.status = ProcessingStatus.COMPLETE
             storage.add_paper(paper)
 
-        # Regenerate feed (non-critical)
         try:
             all_papers = storage.list_papers()
             generate_feed(config, all_papers)
@@ -675,9 +700,59 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             except Exception:
                 logger.warning("Search index update failed for %s", paper_id)
 
-        response = {"status": "ok", "paper_id": paper_id, "title": paper.metadata.title}
-        if audio_warning:
-            response["warning"] = audio_warning
+        response = {
+            "status": "ok",
+            "paper_id": paper_id,
+            "title": paper.metadata.title,
+            "transcript_path": paper.transcript_path,
+            "audio_path": paper.audio_path,
+            "backend_used": audio_result.backend_used,
+        }
+        if audio_result.warnings:
+            response["warnings"] = audio_result.warnings
+        return response
+
+    @router.post("/api/paper/{paper_id:path}/transcript/regenerate")
+    async def api_regenerate_transcript(
+        paper_id: str,
+        req: TranscriptRegenerateRequest | None = None,
+    ):
+        """Regenerate narration transcript + audio for an existing paper."""
+        from paper_assistant.pipeline import regenerate_transcript_and_audio
+
+        payload = req or TranscriptRegenerateRequest()
+        try:
+            result = await regenerate_transcript_and_audio(
+                config=config,
+                storage=storage,
+                paper_id=paper_id,
+                provided_script_markdown=payload.script_markdown,
+                script_model_override=payload.model,
+            )
+        except KeyError:
+            return {"error": f"Paper {paper_id} not found"}
+        except ValueError as e:
+            return {"error": str(e)}
+
+        if search_mgr:
+            try:
+                search_mgr.sync_paper(paper_id, storage)
+            except Exception:
+                logger.warning("Search index update failed for %s", paper_id)
+
+        response = {
+            "status": "ok",
+            "paper_id": result.paper_id,
+            "title": result.title,
+            "transcript_path": (
+                str(result.transcript_path) if result.transcript_path else None
+            ),
+            "audio_path": str(result.audio_path) if result.audio_path else None,
+            "backend_used": result.backend_used,
+            "script_model": result.script_model,
+        }
+        if result.warnings:
+            response["warnings"] = result.warnings
         return response
 
     @router.get("/feed.xml")

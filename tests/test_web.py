@@ -352,9 +352,14 @@ class TestApiDeletePaper:
 class TestApiImport:
     def test_import_success(self, client, config):
         mock_metadata = _make_metadata()
+        from paper_assistant.audio_assets import AudioAssetsResult
         with (
             patch("paper_assistant.pipeline.fetch_hf_metadata", new_callable=AsyncMock, return_value=mock_metadata),
-            patch("paper_assistant.pipeline.text_to_speech", new_callable=AsyncMock),
+            patch(
+                "paper_assistant.pipeline.render_audio_assets",
+                new_callable=AsyncMock,
+                return_value=AudioAssetsResult(),
+            ),
             patch("paper_assistant.pipeline.generate_feed", return_value="<rss/>"),
         ):
             resp = client.post(
@@ -664,11 +669,13 @@ class TestApiUpdateSummary:
         storage.add_paper(paper)
         storage.save_summary("2503.10291", "# Old\nOld")
 
+        from paper_assistant.audio_assets import AudioAssetsResult
+
         with (
             patch(
-                "paper_assistant.tts.text_to_speech",
+                "paper_assistant.audio_assets.render_audio_assets",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("TTS broke"),
+                return_value=AudioAssetsResult(warnings=["TTS broke"]),
             ),
             patch("paper_assistant.podcast.generate_feed", return_value="<rss/>"),
         ):
@@ -678,7 +685,8 @@ class TestApiUpdateSummary:
             )
         data = resp.json()
         assert data["status"] == "ok"
-        assert "warning" in data
+        assert "warnings" in data
+        assert data["warnings"]
 
         # Summary should still be saved
         paper = storage.get_paper("2503.10291")

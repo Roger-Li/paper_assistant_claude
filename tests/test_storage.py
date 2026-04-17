@@ -236,6 +236,39 @@ class TestStorageManager:
         with pytest.raises(KeyError):
             storage.save_summary("9999.99999", "content")
 
+    def test_save_transcript_round_trip(self, storage, sample_paper, tmp_path):
+        storage.add_paper(sample_paper)
+        path = storage.save_transcript("2503.10291", "# Narration\nBody")
+
+        assert path.exists()
+        assert path.name == "2503.10291.md"
+        assert path.parent.name == "transcripts"
+        assert path.read_text(encoding="utf-8") == "# Narration\nBody"
+
+        paper = storage.get_paper("2503.10291")
+        assert paper.transcript_path == "transcripts/2503.10291.md"
+
+    def test_save_transcript_nonexistent_paper(self, storage):
+        with pytest.raises(KeyError):
+            storage.save_transcript("9999.99999", "content")
+
+    def test_delete_paper_cleans_transcript(self, storage, tmp_path):
+        paper = Paper(
+            metadata=_make_metadata(),
+            summary_path="papers/test.md",
+            transcript_path="transcripts/2503.10291.md",
+        )
+        storage.add_paper(paper)
+
+        summary_file = tmp_path / "papers" / "test.md"
+        summary_file.write_text("summary")
+        transcript_file = tmp_path / "transcripts" / "2503.10291.md"
+        transcript_file.write_text("transcript")
+
+        storage.delete_paper("2503.10291", delete_files=True)
+        assert not transcript_file.exists()
+        assert not summary_file.exists()
+
     def test_index_persists_to_disk(self, storage, sample_paper, tmp_path):
         storage.add_paper(sample_paper)
         # Create a new StorageManager pointing to the same dir

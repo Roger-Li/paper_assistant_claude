@@ -28,6 +28,8 @@ dependencies = [
     "trafilatura>=1.6.0",
     "beautifulsoup4>=4.12.0",
     "pygments>=2.17.0",
+    "pydub>=0.25.1",
+    "audioop-lts>=0.2.2; python_version >= '3.13'",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +37,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.6.0",
+    "respx>=0.21.0",
 ]
 
 [project.scripts]

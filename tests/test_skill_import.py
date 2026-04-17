@@ -72,15 +72,53 @@ def _existing_paper(metadata: PaperMetadata) -> Paper:
     )
 
 
-async def _write_audio(_text: str, output_path: Path, _voice: str, _rate: str) -> None:
+async def _write_audio(_text: str, output_path: Path, _voice: str = "", _rate: str = "") -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(b"fake-audio")
+
+
+def _stub_render_audio_assets(regenerate_audio: bool = True):
+    """Return a render_audio_assets replacement that writes a fake mp3 file."""
+    from paper_assistant.audio_assets import AudioAssetsResult
+    from paper_assistant.models import ProcessingStatus
+    from paper_assistant.storage import make_audio_filename
+
+    async def _stub(*, config, storage, paper, skip_audio, skip_transcript, **_kw):
+        paper_id = paper.metadata.paper_id
+        result = AudioAssetsResult()
+        if skip_audio:
+            fresh = storage.get_paper(paper_id) or paper
+            if fresh.audio_path:
+                result.audio_path = config.data_dir / fresh.audio_path
+            if fresh.transcript_path:
+                result.transcript_path = config.data_dir / fresh.transcript_path
+            return result
+        if not regenerate_audio:
+            return result
+        audio_path = config.audio_dir / make_audio_filename(paper_id)
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"fake-audio")
+        fresh = storage.get_paper(paper_id) or paper
+        fresh.audio_path = f"audio/{make_audio_filename(paper_id)}"
+        fresh.status = ProcessingStatus.AUDIO_GENERATED
+        storage.add_paper(fresh)
+        result.audio_path = audio_path
+        result.backend_used = "edge"
+        return result
+
+    return _stub
+
+
 @pytest.mark.asyncio
 async def test_import_happy_path(config, storage):
     metadata = _metadata()
 
     with (
         patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
-        patch("paper_assistant.pipeline.text_to_speech", new=AsyncMock(side_effect=_write_audio)),
+        patch(
+            "paper_assistant.pipeline.render_audio_assets",
+            new=AsyncMock(side_effect=_stub_render_audio_assets()),
+        ),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         result = await import_paper_summary(
@@ -308,13 +346,16 @@ async def test_import_model_with_version(config, storage):
 async def test_import_refetch_after_save(config, storage):
     metadata = _metadata()
 
-    async def assert_refetched(*, paper: Paper, **_kwargs) -> None:
+    from paper_assistant.audio_assets import AudioAssetsResult
+
+    async def assert_refetched(*, paper: Paper, **_kwargs) -> AudioAssetsResult:
         assert paper.summary_path is not None
+        return AudioAssetsResult()
 
     with (
         patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch(
-            "paper_assistant.pipeline._generate_audio_for_import",
+            "paper_assistant.pipeline.render_audio_assets",
             new=AsyncMock(side_effect=assert_refetched),
         ),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
@@ -409,27 +450,30 @@ async def test_force_merge_audio_keep_on_skip(config, storage):
     existing = _existing_paper(metadata)
     storage.add_paper(existing)
 
+    stub = _stub_render_audio_assets()
+    render_mock = AsyncMock(side_effect=stub)
+
     with (
         patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+        patch("paper_assistant.pipeline.render_audio_assets", new=render_mock),
     ):
-        text_to_speech = AsyncMock()
-        with patch("paper_assistant.pipeline.text_to_speech", new=text_to_speech):
-            result = await import_paper_summary(
-                config=config,
-                storage=storage,
-                url=metadata.arxiv_url or metadata.paper_id,
-                markdown="# One-Pager\nUpdated body",
-                model="claude-code",
-                force=True,
-                skip_audio=True,
-            )
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nUpdated body",
+            model="claude-code",
+            force=True,
+            skip_audio=True,
+        )
 
     paper = storage.get_paper(metadata.paper_id)
     assert paper is not None
     assert paper.audio_path == existing.audio_path
     assert result.audio_path == config.data_dir / existing.audio_path
-    text_to_speech.assert_not_awaited()
+    render_mock.assert_awaited_once()
+    assert render_mock.await_args.kwargs["skip_audio"] is True
 
 
 @pytest.mark.asyncio
@@ -440,7 +484,10 @@ async def test_force_merge_audio_replace(config, storage):
 
     with (
         patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
-        patch("paper_assistant.pipeline.text_to_speech", new=AsyncMock(side_effect=_write_audio)),
+        patch(
+            "paper_assistant.pipeline.render_audio_assets",
+            new=AsyncMock(side_effect=_stub_render_audio_assets()),
+        ),
         patch("paper_assistant.pipeline.generate_feed", new=Mock()),
     ):
         await import_paper_summary(

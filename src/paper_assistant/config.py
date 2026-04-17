@@ -45,6 +45,21 @@ class Config(BaseModel):
     qmd_index_name: str = "paper-assistant"
     qmd_collection_name: str = "papers"
 
+    # TTS backend + MLX settings
+    tts_backend: str = "mlx"  # "mlx" | "edge"
+    mlx_tts_url: str = "http://127.0.0.1:8000"
+    mlx_tts_model: str = "Voxtral-4B-TTS-2603-mlx-bf16"
+    mlx_tts_voice: str | None = None
+    mlx_tts_api_key: str | None = None
+    mlx_tts_timeout_s: float = 120.0
+    mlx_tts_chunk_chars: int = 2000
+    mlx_tts_max_input_chars: int = 6000
+    mlx_tts_speed: float = 1.0
+    tts_edge_fallback: bool = True
+
+    # Audio narration script (derived transcript) settings
+    audio_script_model: str = "claude-haiku-4-5-20251001"
+
     @property
     def papers_dir(self) -> Path:
         return self.data_dir / "papers"
@@ -52,6 +67,10 @@ class Config(BaseModel):
     @property
     def audio_dir(self) -> Path:
         return self.data_dir / "audio"
+
+    @property
+    def transcripts_dir(self) -> Path:
+        return self.data_dir / "transcripts"
 
     @property
     def pdfs_dir(self) -> Path:
@@ -71,7 +90,7 @@ class Config(BaseModel):
 
     def ensure_dirs(self) -> None:
         """Create all required directories."""
-        for d in [self.papers_dir, self.audio_dir, self.pdfs_dir]:
+        for d in [self.papers_dir, self.audio_dir, self.transcripts_dir, self.pdfs_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -173,5 +192,50 @@ def load_config(**overrides: object) -> Config:
     qmd_collection_name = os.getenv("PAPER_ASSIST_QMD_COLLECTION")
     if qmd_collection_name:
         kwargs["qmd_collection_name"] = qmd_collection_name
+
+    # TTS backend selection + MLX settings
+    tts_backend = os.getenv("PAPER_ASSIST_TTS_BACKEND")
+    if tts_backend:
+        kwargs["tts_backend"] = tts_backend.strip().lower()
+
+    mlx_tts_url = os.getenv("PAPER_ASSIST_MLX_TTS_URL")
+    if mlx_tts_url:
+        kwargs["mlx_tts_url"] = mlx_tts_url.rstrip("/")
+
+    mlx_tts_model = os.getenv("PAPER_ASSIST_MLX_TTS_MODEL")
+    if mlx_tts_model:
+        kwargs["mlx_tts_model"] = mlx_tts_model
+
+    mlx_tts_voice = os.getenv("PAPER_ASSIST_MLX_TTS_VOICE")
+    if mlx_tts_voice:
+        kwargs["mlx_tts_voice"] = mlx_tts_voice
+
+    mlx_tts_api_key = os.getenv("PAPER_ASSIST_MLX_TTS_API_KEY")
+    if mlx_tts_api_key:
+        kwargs["mlx_tts_api_key"] = mlx_tts_api_key
+
+    mlx_tts_timeout_s = os.getenv("PAPER_ASSIST_MLX_TTS_TIMEOUT")
+    if mlx_tts_timeout_s is not None:
+        kwargs["mlx_tts_timeout_s"] = float(mlx_tts_timeout_s)
+
+    mlx_tts_chunk_chars = os.getenv("PAPER_ASSIST_MLX_TTS_CHUNK_CHARS")
+    if mlx_tts_chunk_chars is not None:
+        kwargs["mlx_tts_chunk_chars"] = int(mlx_tts_chunk_chars)
+
+    mlx_tts_max_input_chars = os.getenv("PAPER_ASSIST_MLX_TTS_MAX_INPUT_CHARS")
+    if mlx_tts_max_input_chars is not None:
+        kwargs["mlx_tts_max_input_chars"] = int(mlx_tts_max_input_chars)
+
+    mlx_tts_speed = os.getenv("PAPER_ASSIST_MLX_TTS_SPEED")
+    if mlx_tts_speed is not None:
+        kwargs["mlx_tts_speed"] = float(mlx_tts_speed)
+
+    tts_edge_fallback = os.getenv("PAPER_ASSIST_TTS_EDGE_FALLBACK")
+    if tts_edge_fallback is not None:
+        kwargs["tts_edge_fallback"] = tts_edge_fallback.lower() in ("true", "1", "yes")
+
+    audio_script_model = os.getenv("PAPER_ASSIST_AUDIO_SCRIPT_MODEL")
+    if audio_script_model:
+        kwargs["audio_script_model"] = audio_script_model
 
     return Config(**kwargs)

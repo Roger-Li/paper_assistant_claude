@@ -28,7 +28,10 @@ For user-facing setup and usage, see [README.md](README.md).
 1d. **`--force` imports must merge, not replace, existing state.**
    Preserve `date_added`, `reading_status`, `notion_page_id`, `notion_modified_at`, `last_synced_at`, and `archived_at`.
    Merge tags by union; never remove existing tags during re-import.
-   Preserve `audio_path` only when `--skip-audio` is set; otherwise clear and regenerate audio.
+   Force × skip matrix for audio assets:
+   - `skip_audio=True` (master switch): preserve both `audio_path` and `transcript_path`.
+   - `skip_transcript=True` alone: preserve `transcript_path`; regenerate audio from raw summary.
+   - Neither flag: clear both and regenerate through `render_audio_assets()`.
 
 2. **Keep `index.json` and file paths consistent.**
    `pdf_path`, `summary_path`, and `audio_path` are stored relative to `data_dir`.
@@ -45,7 +48,32 @@ For user-facing setup and usage, see [README.md](README.md).
 4b. **arXiv metadata `429`s should fail over quickly.**
    Metadata fetches should prefer the abs-page fallback over burning the full API retry budget.
 
-5. **TTS speaks full markdown summary content**, not only one-pager section.
+5. **TTS input is the derived narration script when available.**
+   Audio is synthesized from `transcript_path` (written to `transcripts/{paper_id}.md`)
+   via `prepare_script_for_tts()` when present; otherwise the full markdown summary
+   goes through `prepare_text_for_tts()` as a fallback. Never synthesize from the
+   one-pager section alone.
+
+5a. **Audio-asset generation is centralized in `audio_assets.render_audio_assets()`.**
+   Every inline TTS call site (CLI add/import/skill-import, `POST /api/add`,
+   `POST /api/create`, `POST /api/import`, `PUT /api/paper/{id}/summary`, the new
+   `POST /api/paper/{id}/transcript/regenerate`, `paper-assist transcript regenerate`,
+   and `pipeline.create_local_entry`) delegates audio work through this helper.
+   Backends raise typed errors (`MlxConfigError`, `MlxTransientError`, `EdgeTTSError`,
+   `FfmpegMissingError`); the helper converts them to warnings so import flows
+   degrade gracefully (invariant 7).
+
+5c. **Primary TTS backend is local MLX; edge-tts is graceful fallback.**
+   `config.tts_backend` defaults to `"mlx"` and targets an OpenAI-compatible
+   `/v1/audio/speech` endpoint at `config.mlx_tts_url`. `MlxTransientError`
+   triggers edge fallback when `tts_edge_fallback` is set; `MlxConfigError`
+   (4xx responses) does NOT fall back — the warning surfaces the misconfiguration.
+   ffmpeg is recommended (`brew install ffmpeg`) for long-paper multi-chunk MP3
+   concatenation on the MLX path.
+
+5d. **`normalize_summary_body()` is the single source of truth** for stripping
+   YAML front matter + the duplicated title/metadata header from stored summaries.
+   All edit/regen/narration entry points should use it when loading from disk.
 
 5b. **Browser Reader Mode is separate from generated audio.**
    - Prefer browser default/local non-novelty voices.
@@ -139,12 +167,18 @@ pytest tests/
 ```
 
 Target files:
-- `tests/test_storage.py` — index/path invariants
-- `tests/test_summarizer.py` — section parsing
+- `tests/test_storage.py` — index/path invariants (including transcript round-trip + cleanup)
+- `tests/test_summarizer.py` — section parsing + `normalize_summary_body`
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
 - `tests/test_notion.py` — sync conflict/merge rules
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
+- `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
+- `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)
+- `tests/test_audio_assets.py` — `render_audio_assets` force × skip matrix + fallback
+- `tests/test_audio_script.py` — Claude narration script generation
+- `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
+- `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
 
 Browser Reader Mode: automated coverage at the HTML contract level; manual desktop Brave/Chromium QA for speech events, sentence progression, highlight behavior, and keyboard shortcuts.
 

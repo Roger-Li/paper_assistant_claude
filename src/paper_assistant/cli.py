@@ -41,6 +41,11 @@ def main(ctx: click.Context, data_dir: str | None) -> None:
     help="When PDF fallback is needed, send raw PDF to Claude instead of extracted text.",
 )
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option(
+    "--skip-transcript",
+    is_flag=True,
+    help="Skip the derived narration transcript (TTS uses the raw summary).",
+)
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
 @click.option("--force", is_flag=True, help="Re-process even if paper already exists.")
 @click.pass_context
@@ -49,6 +54,7 @@ def add(
     url: str,
     native_pdf: bool,
     skip_audio: bool,
+    skip_transcript: bool,
     tags: tuple[str, ...],
     force: bool,
 ) -> None:
@@ -60,7 +66,9 @@ def add(
       paper-assist add https://huggingface.co/papers/2503.10291
       paper-assist add https://example.com/blog/article
     """
-    asyncio.run(_add_paper(ctx.obj, url, native_pdf, skip_audio, list(tags), force))
+    asyncio.run(
+        _add_paper(ctx.obj, url, native_pdf, skip_audio, skip_transcript, list(tags), force)
+    )
 
 
 async def _add_paper(
@@ -68,16 +76,18 @@ async def _add_paper(
     url: str,
     native_pdf: bool,
     skip_audio: bool,
-    tags: list[str],
-    force: bool,
+    skip_transcript: bool = False,
+    tags: list[str] | None = None,
+    force: bool = False,
 ) -> None:
     """Full pipeline: fetch -> extract -> summarize -> TTS -> RSS."""
     from paper_assistant.web_article import is_arxiv_url
 
+    tag_list = list(tags or [])
     if is_arxiv_url(url):
-        await _add_arxiv_paper(obj, url, native_pdf, skip_audio, tags, force)
+        await _add_arxiv_paper(obj, url, native_pdf, skip_audio, skip_transcript, tag_list, force)
     else:
-        await _add_web_article(obj, url, skip_audio, tags, force)
+        await _add_web_article(obj, url, skip_audio, skip_transcript, tag_list, force)
 
 
 async def _add_arxiv_paper(
@@ -85,10 +95,12 @@ async def _add_arxiv_paper(
     url: str,
     native_pdf: bool,
     skip_audio: bool,
-    tags: list[str],
-    force: bool,
+    skip_transcript: bool = False,
+    tags: list[str] | None = None,
+    force: bool = False,
 ) -> None:
     """arXiv paper pipeline: fetch -> extract -> summarize -> TTS -> RSS."""
+    tags = list(tags or [])
     from paper_assistant.arxiv import download_pdf, fetch_metadata as fetch_arxiv_metadata, parse_arxiv_url
     from paper_assistant.config import load_config
     from paper_assistant.hf_papers import (
@@ -205,8 +217,9 @@ async def _add_arxiv_paper(
 
     # Step 4: Generate audio
     await _generate_audio_step(
-        config, storage, paper, result, metadata, paper_id, skip_audio, "4/5"
+        config, storage, paper_id, result.full_markdown, skip_audio, skip_transcript, "4/5"
     )
+    paper = storage.get_paper(paper_id) or paper
 
     # Step 5: Update RSS feed
     _update_feed_step(config, storage, paper, "5/5")
@@ -228,6 +241,8 @@ async def _add_arxiv_paper(
     console.print()
     console.print("[green]Done![/green] Paper processed successfully.")
     console.print(f"  Summary: {summary_path}")
+    if paper.transcript_path:
+        console.print(f"  Transcript: {config.data_dir / paper.transcript_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
 
@@ -236,10 +251,12 @@ async def _add_web_article(
     obj: dict,
     url: str,
     skip_audio: bool,
-    tags: list[str],
-    force: bool,
+    skip_transcript: bool = False,
+    tags: list[str] | None = None,
+    force: bool = False,
 ) -> None:
     """Web article pipeline: fetch -> summarize -> TTS -> RSS."""
+    tags = list(tags or [])
     from paper_assistant.config import load_config
     from paper_assistant.models import Paper, ProcessingStatus
     from paper_assistant.storage import StorageManager
@@ -304,8 +321,9 @@ async def _add_web_article(
 
     # Step 3: Generate audio
     await _generate_audio_step(
-        config, storage, paper, result, metadata, paper_id, skip_audio, "3/4"
+        config, storage, paper_id, result.full_markdown, skip_audio, skip_transcript, "3/4"
     )
+    paper = storage.get_paper(paper_id) or paper
 
     # Step 4: Update RSS feed
     _update_feed_step(config, storage, paper, "4/4")
@@ -327,35 +345,44 @@ async def _add_web_article(
     console.print()
     console.print("[green]Done![/green] Article processed successfully.")
     console.print(f"  Summary: {summary_path}")
+    if paper.transcript_path:
+        console.print(f"  Transcript: {config.data_dir / paper.transcript_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
 
 
 async def _generate_audio_step(
-    config, storage, paper, result, metadata, paper_id, skip_audio, step_label
+    config, storage, paper_id, source_markdown, skip_audio, skip_transcript, step_label
 ):
-    """Shared audio generation step for both arXiv and web article pipelines."""
-    from paper_assistant.models import ProcessingStatus
-    from paper_assistant.storage import make_audio_filename
-    from paper_assistant.tts import prepare_text_for_tts, text_to_speech
+    """Shared audio-asset step for arXiv + web article pipelines."""
+    from paper_assistant.audio_assets import render_audio_assets
 
-    if not skip_audio:
-        console.print(f"[bold]Step {step_label}:[/bold] Generating audio...")
-        try:
-            tts_text = prepare_text_for_tts(
-                result.full_markdown, metadata.title, metadata.authors,
-                source_label=metadata.source_label,
-            )
-            audio_path = config.audio_dir / make_audio_filename(paper_id)
-            await text_to_speech(tts_text, audio_path, config.tts_voice, config.tts_rate)
-            paper.audio_path = f"audio/{make_audio_filename(paper_id)}"
-            paper.status = ProcessingStatus.AUDIO_GENERATED
-            storage.add_paper(paper)
-        except Exception as e:
-            console.print(f"[yellow]Warning: TTS failed:[/yellow] {e}")
-            console.print("  Summary was saved. Audio can be regenerated later.")
-    else:
+    if skip_audio:
         console.print(f"[bold]Step {step_label}:[/bold] Skipping audio (--skip-audio).")
+        return
+
+    label_suffix = " (transcript skipped, using raw summary)" if skip_transcript else ""
+    console.print(f"[bold]Step {step_label}:[/bold] Generating audio{label_suffix}...")
+
+    paper = storage.get_paper(paper_id)
+    if paper is None:
+        console.print(f"[yellow]Warning: paper {paper_id} missing before audio step.[/yellow]")
+        return
+
+    result = await render_audio_assets(
+        config=config,
+        storage=storage,
+        paper=paper,
+        source_markdown=source_markdown,
+        skip_transcript=skip_transcript,
+        skip_audio=False,
+    )
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    if result.transcript_path:
+        console.print(f"  Transcript: {result.transcript_path}")
+    if result.audio_path and result.backend_used:
+        console.print(f"  Audio backend: {result.backend_used}")
 
 
 def _update_feed_step(config, storage, paper, step_label):
@@ -538,6 +565,10 @@ def _import_result_to_dict(result) -> dict[str, object]:
         "title": result.title,
         "summary_path": str(result.summary_path),
         "audio_path": str(result.audio_path) if result.audio_path else None,
+        "transcript_path": (
+            str(result.transcript_path) if result.transcript_path else None
+        ),
+        "backend_used": result.backend_used,
         "model_used": result.model_used,
         "notion_synced": result.notion_synced,
         "notion_error": result.notion_error,
@@ -551,8 +582,12 @@ def _print_import_result(result, success_message: str) -> None:
     console.print(f"  ID:      {result.paper_id}")
     console.print(f"  Title:   [cyan]{result.title}[/cyan]")
     console.print(f"  Summary: {result.summary_path}")
+    if result.transcript_path:
+        console.print(f"  Transcript: {result.transcript_path}")
     if result.audio_path:
         console.print(f"  Audio:   {result.audio_path}")
+    if result.backend_used:
+        console.print(f"  Backend: {result.backend_used}")
     console.print(f"  Model:   {result.model_used}")
     if result.notion_synced:
         console.print("  Notion:  Synced")
@@ -631,6 +666,11 @@ def _recovery_artifact_paths(file_path: str, cleanup_paths: list[Path]) -> list[
 @click.argument("url")
 @click.option("--file", "-f", "file_path", type=click.Path(exists=True), help="Read markdown from file instead of clipboard.")
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option(
+    "--skip-transcript",
+    is_flag=True,
+    help="Skip the derived narration transcript (audio falls back to raw summary).",
+)
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
 @click.option("--force", is_flag=True, help="Re-import even if paper already exists.")
 @click.option(
@@ -644,6 +684,7 @@ def import_paper(
     url: str,
     file_path: str | None,
     skip_audio: bool,
+    skip_transcript: bool,
     tags: tuple[str, ...],
     force: bool,
     model: str | None,
@@ -672,6 +713,7 @@ def import_paper(
                 url=url,
                 markdown=markdown,
                 skip_audio=skip_audio,
+                skip_transcript=skip_transcript,
                 tags=list(tags),
                 force=force,
                 model=model or "manual",
@@ -691,10 +733,12 @@ async def _run_import_pipeline(
     url: str,
     markdown: str,
     skip_audio: bool,
+    skip_transcript: bool,
     tags: list[str],
     force: bool,
     model: str,
     sync_notion: bool,
+    provided_script_markdown: str | None = None,
 ):
     from paper_assistant.config import load_config
     from paper_assistant.pipeline import import_paper_summary
@@ -712,8 +756,10 @@ async def _run_import_pipeline(
         model=model,
         tags=tags,
         skip_audio=skip_audio,
+        skip_transcript=skip_transcript,
         force=force,
         sync_notion=sync_notion,
+        provided_script_markdown=provided_script_markdown,
     )
 
 
@@ -725,6 +771,17 @@ async def _run_import_pipeline(
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this paper.")
 @click.option("--sync-notion", is_flag=True, help="Run Notion sync for this paper after import.")
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option(
+    "--skip-transcript",
+    is_flag=True,
+    help="Skip the derived narration transcript (audio falls back to raw summary).",
+)
+@click.option(
+    "--script-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Use this file as the narration transcript instead of generating one.",
+)
 @click.option("--force", is_flag=True, help="Merge over an existing paper instead of failing.")
 @click.option("--cleanup-file", multiple=True, help="Temporary file to delete after a successful import.")
 @click.option("--json", "json_output", is_flag=True, help="Output ImportResult as JSON.")
@@ -738,6 +795,8 @@ def skill_import(
     tags: tuple[str, ...],
     sync_notion: bool,
     skip_audio: bool,
+    skip_transcript: bool,
+    script_file: str | None,
     force: bool,
     cleanup_file: tuple[str, ...],
     json_output: bool,
@@ -749,6 +808,12 @@ def skill_import(
     if not markdown.strip():
         raise click.ClickException("No markdown content found in --file.")
 
+    provided_script_markdown: str | None = None
+    if script_file is not None:
+        provided_script_markdown = Path(script_file).read_text(encoding="utf-8").strip()
+        if not provided_script_markdown:
+            raise click.ClickException("--script-file was empty.")
+
     model_label = _build_model_label(model, model_version)
 
     try:
@@ -758,10 +823,12 @@ def skill_import(
                 url=url,
                 markdown=markdown,
                 skip_audio=skip_audio,
+                skip_transcript=skip_transcript,
                 tags=list(tags),
                 force=force,
                 model=model_label,
                 sync_notion=sync_notion,
+                provided_script_markdown=provided_script_markdown,
             )
         )
     except Exception as exc:
@@ -817,6 +884,11 @@ def extract_text(pdf_path: str, max_pages: int, output: str | None) -> None:
     help="Read markdown from file instead of clipboard.",
 )
 @click.option("--skip-audio", is_flag=True, help="Skip TTS audio generation.")
+@click.option(
+    "--skip-transcript",
+    is_flag=True,
+    help="Skip the derived narration transcript (audio falls back to raw summary).",
+)
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this note.")
 @click.pass_context
 def create_note(
@@ -825,6 +897,7 @@ def create_note(
     source_url: str | None,
     file_path: str | None,
     skip_audio: bool,
+    skip_transcript: bool,
     tags: tuple[str, ...],
 ) -> None:
     """Create a local markdown-backed note entry from clipboard or file."""
@@ -843,6 +916,7 @@ def create_note(
             source_url=source_url,
             markdown=markdown,
             skip_audio=skip_audio,
+            skip_transcript=skip_transcript,
             tags=list(tags),
         )
     )
@@ -855,6 +929,7 @@ async def _create_note(
     source_url: str | None,
     markdown: str,
     skip_audio: bool,
+    skip_transcript: bool,
     tags: list[str],
 ) -> None:
     from paper_assistant.config import load_config
@@ -875,6 +950,7 @@ async def _create_note(
             source_url=source_url,
             tags=tags,
             skip_audio=skip_audio,
+            skip_transcript=skip_transcript,
         )
     except Exception as e:
         console.print(f"[red]Error creating local note:[/red] {e}")
@@ -890,6 +966,8 @@ async def _create_note(
     console.print("[green]Done![/green] Local note created successfully.")
     console.print(f"  ID:      {paper_id}")
     console.print(f"  Summary: {outcome.summary_path}")
+    if paper.transcript_path:
+        console.print(f"  Transcript: {config.data_dir / paper.transcript_path}")
     if paper.audio_path:
         console.print(f"  Audio:   {config.data_dir / paper.audio_path}")
     for warning in outcome.warnings:
@@ -1268,3 +1346,211 @@ async def _notion_preflight(obj: dict) -> None:
         raise click.ClickException(str(e)) from e
 
     console.print("[green]Notion preflight passed.[/green] Database is reachable and schema-compatible.")
+
+
+@main.group("transcript")
+def transcript_group() -> None:
+    """Manage narration transcripts for existing papers."""
+
+
+@transcript_group.command("regenerate")
+@click.argument("paper_id")
+@click.option(
+    "--model",
+    default=None,
+    help="Override the Claude model used for narration (defaults to config).",
+)
+@click.option(
+    "--script-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Use this file as the narration transcript instead of generating one.",
+)
+@click.pass_context
+def transcript_regenerate(
+    ctx: click.Context,
+    paper_id: str,
+    model: str | None,
+    script_file: str | None,
+) -> None:
+    """Regenerate narration transcript + audio for an existing paper."""
+    provided_script: str | None = None
+    if script_file is not None:
+        provided_script = Path(script_file).read_text(encoding="utf-8").strip()
+        if not provided_script:
+            raise click.ClickException("--script-file was empty.")
+
+    asyncio.run(
+        _transcript_regenerate(
+            ctx.obj,
+            paper_id=paper_id,
+            model=model,
+            provided_script=provided_script,
+        )
+    )
+
+
+async def _transcript_regenerate(
+    obj: dict,
+    *,
+    paper_id: str,
+    model: str | None,
+    provided_script: str | None,
+) -> None:
+    from paper_assistant.config import load_config
+    from paper_assistant.pipeline import regenerate_transcript_and_audio
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**obj)
+    config.ensure_dirs()
+    storage = StorageManager(config)
+
+    console.print(f"[bold]Regenerating transcript + audio for {paper_id}...[/bold]")
+    try:
+        result = await regenerate_transcript_and_audio(
+            config=config,
+            storage=storage,
+            paper_id=paper_id,
+            provided_script_markdown=provided_script,
+            script_model_override=model,
+        )
+    except KeyError:
+        raise click.ClickException(f"Paper {paper_id} not found.")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    from paper_assistant.search import get_search_manager
+
+    search_mgr = get_search_manager(config)
+    if search_mgr:
+        try:
+            search_mgr.sync_paper(paper_id, storage)
+        except Exception:
+            console.print("[yellow]Warning: Search index update failed.[/yellow]")
+
+    console.print()
+    console.print(f"[green]Done![/green] {result.title}")
+    if result.transcript_path:
+        console.print(f"  Transcript: {result.transcript_path}")
+    if result.audio_path:
+        console.print(f"  Audio:      {result.audio_path}")
+    if result.script_model:
+        console.print(f"  Script model: {result.script_model}")
+    if result.backend_used:
+        console.print(f"  Backend:    {result.backend_used}")
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
+@main.group("tts")
+def tts_group() -> None:
+    """Text-to-speech diagnostics."""
+
+
+@tts_group.command("check")
+@click.pass_context
+def tts_check(ctx: click.Context) -> None:
+    """Probe the configured TTS backend and report readiness."""
+    asyncio.run(_tts_check(ctx.obj))
+
+
+async def _tts_check(obj: dict) -> None:
+    import shutil
+    import time
+
+    import httpx
+
+    from paper_assistant.config import load_config
+    from paper_assistant.tts import (
+        EdgeTTSError,
+        MlxConfigError,
+        MlxTransientError,
+        TTSBackendError,
+        get_edge_backend,
+        get_tts_backend,
+    )
+
+    config = load_config(**obj)
+    config.ensure_dirs()
+
+    console.print(f"[bold]TTS backend:[/bold] {config.tts_backend}")
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        console.print(f"  ffmpeg: [green]present[/green] ({ffmpeg_path})")
+    else:
+        console.print("  ffmpeg: [yellow]missing[/yellow] — long papers may fail to concat; `brew install ffmpeg`.")
+
+    exit_code = 0
+
+    if config.tts_backend == "mlx":
+        url = config.mlx_tts_url.rstrip("/")
+        console.print(f"  MLX url: {url}")
+        console.print(f"  MLX model: {config.mlx_tts_model}")
+
+        models_url = f"{url}/v1/models"
+        headers = {}
+        if config.mlx_tts_api_key:
+            headers["Authorization"] = f"Bearer {config.mlx_tts_api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(models_url, headers=headers)
+            console.print(f"  GET /v1/models → {resp.status_code}")
+            if resp.status_code >= 400:
+                console.print(f"  [red]Models endpoint rejected request:[/red] {resp.text[:200]}")
+                exit_code = 1
+        except Exception as exc:
+            console.print(f"  [red]MLX /v1/models unreachable:[/red] {exc}")
+            exit_code = 1
+
+    probe_path = config.audio_dir / "_tts_probe.mp3"
+    probe_text = "This is a one-sentence probe of the paper assistant text to speech pipeline."
+
+    backend = get_tts_backend(config)
+    start = time.monotonic()
+    primary_failed = False
+    try:
+        await backend.synthesize(probe_text, probe_path)
+        elapsed = time.monotonic() - start
+        size = probe_path.stat().st_size if probe_path.exists() else 0
+        console.print(
+            f"  Primary probe: [green]{backend.name}[/green] ok in {elapsed:.1f}s ({size} bytes)"
+        )
+    except MlxConfigError as exc:
+        console.print(f"  Primary probe: [red]{backend.name} config error[/red] — {exc}")
+        console.print("  Fix config and retry — fallback suppressed to keep the bug visible.")
+        exit_code = 1
+        primary_failed = True
+    except MlxTransientError as exc:
+        console.print(f"  Primary probe: [yellow]{backend.name} transient[/yellow] — {exc}")
+        primary_failed = True
+    except TTSBackendError as exc:
+        console.print(f"  Primary probe: [yellow]{backend.name} failed[/yellow] — {exc}")
+        primary_failed = True
+    except Exception as exc:
+        console.print(f"  Primary probe: [red]unexpected error[/red] — {exc}")
+        exit_code = 1
+        primary_failed = True
+
+    if primary_failed and config.tts_backend == "mlx" and config.tts_edge_fallback:
+        edge = get_edge_backend(config)
+        try:
+            start = time.monotonic()
+            await edge.synthesize(probe_text, probe_path)
+            elapsed = time.monotonic() - start
+            size = probe_path.stat().st_size if probe_path.exists() else 0
+            console.print(
+                f"  Fallback probe: [green]edge[/green] ok in {elapsed:.1f}s ({size} bytes)"
+            )
+        except EdgeTTSError as exc:
+            console.print(f"  Fallback probe: [red]edge failed[/red] — {exc}")
+            exit_code = 1
+
+    if probe_path.exists():
+        try:
+            probe_path.unlink()
+        except OSError:
+            pass
+
+    if exit_code != 0:
+        raise SystemExit(exit_code)

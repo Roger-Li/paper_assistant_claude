@@ -178,6 +178,26 @@ async def summarize_article_text(
     )
 
 
+def normalize_summary_body(raw: str) -> str:
+    """Strip YAML front matter and the duplicated title/metadata header.
+
+    Fresh summaries returned from Claude are already bodies. Summaries loaded
+    from disk include YAML front matter and a title/authors header inserted by
+    ``format_summary_file``; this helper returns the editable/narration body.
+    """
+    body = raw
+    if body.startswith("---"):
+        end_idx = body.find("---", 3)
+        if end_idx != -1:
+            body = body[end_idx + 3 :].lstrip()
+
+    hr_idx = body.find("\n---\n")
+    if hr_idx != -1 and hr_idx < 400:
+        body = body[hr_idx + 5 :].lstrip()
+
+    return body
+
+
 def parse_summary_sections(markdown: str) -> dict[str, str]:
     """Parse Claude's markdown response into named sections.
 

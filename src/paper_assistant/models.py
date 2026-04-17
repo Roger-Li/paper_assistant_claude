@@ -91,6 +91,7 @@ class Paper(BaseModel):
     pdf_path: str | None = None
     summary_path: str | None = None
     audio_path: str | None = None
+    transcript_path: str | None = None
 
     # Processing metadata
     model_used: str | None = None

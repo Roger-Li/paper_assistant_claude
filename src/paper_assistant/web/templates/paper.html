@@ -67,9 +67,11 @@
     <button id="edit-btn" class="outline" onclick="toggleEdit()">Edit Summary</button>
     {% endif %}
     <button id="sync-notion-btn" class="outline" onclick="syncWithNotion()">Sync with Notion</button>
+    <button id="regen-transcript-btn" class="outline" onclick="regenerateTranscript()">Regenerate transcript + audio</button>
     <button id="delete-btn" class="secondary outline" onclick="deletePaper()">Delete this entry</button>
 </div>
 <div id="sync-notion-status"></div>
+<div id="regen-transcript-status"></div>
 
 <!-- Edit panel (hidden by default) -->
 <div id="edit-panel" style="display: none; margin-bottom: 1rem;">
@@ -313,6 +315,50 @@ async function syncWithNotion() {
     }
 }
 
+async function regenerateTranscript() {
+    const btn = document.getElementById('regen-transcript-btn');
+    const status = document.getElementById('regen-transcript-status');
+
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Regenerating\u2026';
+    status.innerHTML = '';
+
+    try {
+        const resp = await fetch(`/api/paper/${paperId}/transcript/regenerate`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({}),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            status.innerHTML = `<p class="error">${data.error}</p>`;
+            return;
+        }
+
+        const parts = [];
+        if (data.transcript_path) parts.push('transcript');
+        if (data.audio_path) parts.push('audio');
+        const what = parts.length ? parts.join(' + ') : 'nothing';
+        const backend = data.backend_used ? ` via ${data.backend_used}` : '';
+        const model = data.script_model ? ` (${data.script_model})` : '';
+        status.innerHTML = `<p class="sync-success">Regenerated ${what}${backend}${model}.</p>`;
+
+        if (data.warnings && data.warnings.length) {
+            status.innerHTML += `<p class="sync-warning">${data.warnings.join(' | ')}</p>`;
+        }
+
+        setTimeout(() => location.reload(), 1500);
+    } catch (err) {
+        status.innerHTML = `<p class="error">Regeneration failed: ${err.message}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        btn.textContent = 'Regenerate transcript + audio';
+    }
+}
+
 async function saveSummary() {
     const markdown = document.getElementById('edit-markdown').value;
     const regenAudio = document.getElementById('regen-audio').checked;
@@ -338,7 +384,8 @@ async function saveSummary() {
             status.innerHTML = `<p class="error">${data.error}</p>`;
         } else {
             let msg = 'Summary saved successfully.';
-            if (data.warning) msg += ` Warning: ${data.warning}`;
+            const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+            if (warnings.length) msg += ` Warning: ${warnings.join(' | ')}`;
             status.innerHTML = `<p>${msg}</p>`;
             setTimeout(() => location.reload(), 1500);
         }

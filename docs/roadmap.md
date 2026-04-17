@@ -8,7 +8,8 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 
 ## Active / Remaining
 
-2. `regenerate-audio` command (`single` and `--all`) for imported/legacy entries.
+2. `regenerate-audio` command (`single` and `--all`) for imported/legacy entries. (`paper-assist transcript regenerate <paper_id>` covers the single-paper path via `docs/plan-audio-friendly-readout.md`; a `--all` batch path is still open.)
+2b. Skill-driven transcript generation — let the host agent (Claude Code, Codex CLI, or Kiro) produce the narration script as a skill artifact instead of a dedicated `audio_script_model` Anthropic API call. Avoids the extra per-paper API cost, lets users pick stronger models via their existing subscription, and keeps the skill flow self-contained. See `docs/plan-audio-friendly-readout.md` §14 follow-ups.
 3. Notion sync upload retries. (Formatting and nested lists done; upload retries remain.)
 4. Reachable podcast feed for phone clients (LAN/tunnel/hosted URL strategy).
 5. Batch import for multiple arXiv entries + summary files.
