@@ -9,6 +9,13 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
 2. Read summary instructions from `src/paper_assistant/prompts/paper_summary_instructions.md`.
 3. Unless `--no-sync-notion` is present, run `.venv/bin/paper-assist notion-preflight`
    before the paper workflow. If preflight fails, stop immediately and report it.
+   Do **not** add a `paper-assist index-rebuild --embed` preflight here: the qmd
+   index is already kept current by `sync_paper()`/`batch_sync()` hooks on every
+   mutation path (invariant 7b), so an automatic full rebuild would re-embed the
+   whole library (O(library size)) for an optional lookup. If you suspect the
+   index has drifted (e.g., after bulk imports from another host or after editing
+   summaries out-of-band), run `.venv/bin/paper-assist index-rebuild --embed`
+   manually before invoking `/summarize`.
 4. Create a repo-local artifact directory for the normalized arXiv ID:
    `.artifacts/summarize-paper/<id>/`
 5. Use the Hugging Face paper route as the default retrieval path.
@@ -28,8 +35,10 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
       `.venv/bin/paper-assist extract-text .artifacts/summarize-paper/<id>/paper.pdf --output .artifacts/summarize-paper/<id>/paper.md`
       then read the extracted markdown file.
 6. **Related-paper lookup** (optional, best-effort):
-   If the search index is available, query for related papers in the library:
+   Query for related papers in the library:
    `.venv/bin/paper-assist search --json "<paper title>" --limit 5 --mode hybrid`
+   Prefer hybrid mode; if embeddings are unavailable, the command falls back to
+   text search automatically and prints a warning — that is acceptable.
    If this returns results, use them as context when generating the summary —
    note connections, contrasts, or builds-on relationships with existing library papers.
    If the command fails or returns no results, proceed without related context.
