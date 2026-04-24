@@ -201,23 +201,33 @@ def normalize_summary_body(raw: str) -> str:
 def parse_summary_sections(markdown: str) -> dict[str, str]:
     """Parse Claude's markdown response into named sections.
 
-    Splits on `# Header` lines and returns a dict mapping
-    section names to their content (without the header line).
+    Supports both legacy skill output that used ``# Section`` headings and the
+    tracked prompt format that reserves ``#`` for the paper title and uses
+    ``## Section`` headings for summary sections.
     """
+    headings: list[tuple[int, int, str]] = []
+    for idx, line in enumerate(markdown.split("\n")):
+        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if match:
+            headings.append((idx, len(match.group(1)), match.group(2).strip()))
+
+    if not headings:
+        return {}
+
+    section_level = _summary_section_heading_level(headings)
     sections: dict[str, str] = {}
     current_section = ""
     current_lines: list[str] = []
 
     for line in markdown.split("\n"):
-        # Match top-level headers (# Title)
-        header_match = re.match(r"^#\s+(.+)$", line)
+        header_match = re.match(rf"^#{{{section_level}}}\s+(.+)$", line)
         if header_match:
             # Save previous section
             if current_section:
                 sections[current_section] = "\n".join(current_lines).strip()
             current_section = header_match.group(1).strip()
             current_lines = []
-        else:
+        elif current_section:
             current_lines.append(line)
 
     # Save last section
@@ -225,6 +235,40 @@ def parse_summary_sections(markdown: str) -> dict[str, str]:
         sections[current_section] = "\n".join(current_lines).strip()
 
     return sections
+
+
+def _summary_section_heading_level(headings: list[tuple[int, int, str]]) -> int:
+    """Choose which Markdown heading level represents summary sections."""
+    known_counts: dict[int, int] = {}
+    for _idx, level, title in headings:
+        if _is_known_summary_section(title):
+            known_counts[level] = known_counts.get(level, 0) + 1
+
+    if known_counts:
+        return max(known_counts.items(), key=lambda item: (item[1], -item[0]))[0]
+
+    return min(level for _idx, level, _title in headings)
+
+
+def _is_known_summary_section(title: str) -> bool:
+    normalized = re.sub(r"^\s*\(?\d+\)?[.)]?\s*", "", title).lower()
+    normalized = normalized.replace("&", "and")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+    known_phrases = (
+        "one pager",
+        "one pager summary",
+        "rapid skim",
+        "deep structure map",
+        "critical q a",
+        "critical questions",
+        "key figures and tables",
+        "technical details",
+        "glossary",
+        "my level adaptation",
+        "reading list",
+        "follow ups",
+    )
+    return any(phrase in normalized for phrase in known_phrases)
 
 
 def find_one_pager(sections: dict[str, str]) -> str:

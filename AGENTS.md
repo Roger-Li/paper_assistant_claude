@@ -123,7 +123,7 @@ For user-facing setup and usage, see [README.md](README.md).
 
 ## Skill Workflow Gotchas
 
-- `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose.
+- `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose, and should run the prompt's redundancy pass before import (no repeated method definitions; headline metrics appear only where they add value).
 - Paper content retrieval prefers `hf papers info <id>` for metadata and `hf papers read <id>` for body content (redirected to a file to avoid shell output truncation); PDF download is the fallback path only.
 - `skill-import` must always receive the canonical arXiv URL (`https://arxiv.org/abs/<id>`), not HuggingFace or other source URLs, so that `paper_id` resolves to the arXiv ID.
 - Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`. The Kiro skill omits Notion sync entirely (designed for environments without Notion credentials).

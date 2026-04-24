@@ -49,6 +49,10 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
      (implementation details, architecture decisions, code snippets,
      theoretical contributions, comparison with prior work, open questions)
    - If related papers were found in step 6, weave brief connections into the summary where natural
+   - Apply the prompt's redundancy pass before writing the file: do not repeat
+     method definitions across sections, keep headline metrics in at most two
+     places, and make later sections add mechanism, evidence, caveat,
+     implementation detail, or contrast.
 8. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
 9. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.

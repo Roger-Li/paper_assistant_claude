@@ -248,7 +248,7 @@ Set `PAPER_ASSIST_TTS_BACKEND=edge` if you prefer edge-tts as the primary backen
 
 ## Skills
 
-The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, generating a narration transcript when audio is enabled, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. The Claude Code command, Codex skill, and Kiro skill all read the same tracked instructions from `src/paper_assistant/prompts/paper_summary_instructions.md`, then hand the finished markdown to `paper-assist skill-import`.
+The skill-based workflow automates the manual loop of reading a paper, generating a structured summary, generating a narration transcript when audio is enabled, importing it into Paper Assistant, optionally creating audio, and optionally syncing the final record to Notion. The Claude Code command, Codex skill, and Kiro skill all read the same tracked instructions from `src/paper_assistant/prompts/paper_summary_instructions.md`, run an explicit redundancy pass so later sections add mechanism/evidence/caveat rather than repeating definitions, then hand the finished markdown to `paper-assist skill-import`.
 
 ### Setup
 

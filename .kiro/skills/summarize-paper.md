@@ -36,6 +36,10 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    - `# My-Level Adaptation` profile: ML engineer + researcher
      (implementation details, architecture decisions, code snippets,
      theoretical contributions, comparison with prior work, open questions)
+   - Apply the prompt's redundancy pass before writing the file: do not repeat
+     method definitions across sections, keep headline metrics in at most two
+     places, and make later sections add mechanism, evidence, caveat,
+     implementation detail, or contrast.
 6. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
 7. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.

@@ -9,6 +9,9 @@ GLOBAL POLICY (apply to every turn)
 2. **Cite precisely** - When you quote or paraphrase, add *(Section X, p.Y)*.
 3. **No fluff** - be direct, technical, and concise.
 4. **Teaching moments** - For non-obvious terms, add a brief sidebar (intuitive analogy + mini example).
+5. **Low redundancy** - Treat the summary as one edited document. Each major
+   claim should have one home; later sections must add mechanism, evidence,
+   caveat, implementation detail, or contrast rather than restating earlier prose.
 
 Given the full text of a research paper, produce ALL of the following sections \
 using Markdown with the exact headers shown below.
@@ -22,7 +25,8 @@ A concise ~400-word summary covering:
 
 # Rapid Skim
 20 or fewer bullets covering: Motivation -> Method -> Results -> Limitations.
-Append 5-8 keywords at the end.
+Append 5-8 keywords at the end. Use this as a claim ledger; do not repeat
+the One-Pager's sentences or method definitions.
 
 # Deep-Structure Map
 Hierarchical indented outline:
@@ -31,13 +35,16 @@ Hierarchical indented outline:
 
 # Critical Q&A
 8 or more skeptical reviewer questions with concise answers.
-Tag each answer with (Strong / Weak / Missing).
+Tag each answer with (Strong / Weak / Missing). Focus on reviewer risk and
+uncertainty, not another method recap.
 
 # Key Figures and Tables
 For each important figure/table: what it shows, why it matters, any surprising patterns.
 
 # Technical Details
 Architecture/algorithm specifics, training details, evaluation metrics, benchmarks.
+Only include details not already explained in Deep-Structure Map, or details that
+need a numeric/configuration-level treatment.
 
 # Glossary
 Domain-specific terms, acronyms, or notation a reader from a neighboring subfield might not know.
@@ -51,6 +58,8 @@ FORMAT RULES:
 - Be precise with numbers from the paper
 - Do not hallucinate information not in the paper
 - Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs
+- Before finalizing, remove repeated method definitions, merge duplicate bullets,
+  and keep each headline metric in at most two places.
 """
 
 USER_PROMPT_TEMPLATE = """\
@@ -81,6 +90,9 @@ when quoting or paraphrasing.
 3. **No fluff** - be direct, technical, and concise.
 4. **Teaching moments** - For non-obvious terms, add a brief sidebar \
 (intuitive analogy + mini example).
+5. **Low redundancy** - Treat the summary as one edited document. Each major
+   claim should have one home; later sections must add mechanism, evidence,
+   caveat, implementation detail, or contrast rather than restating earlier prose.
 
 Given the full text of a technical article, produce ALL of the following \
 sections using Markdown with the exact headers shown below.
@@ -95,7 +107,8 @@ A concise ~400-word summary covering:
 # Rapid Skim
 20 or fewer bullets covering: Context -> Main Argument -> Evidence -> \
 Implications.
-Append 5-8 keywords at the end.
+Append 5-8 keywords at the end. Use this as a claim ledger; do not repeat
+the One-Pager's sentences or concept definitions.
 
 # Deep-Structure Map
 Hierarchical indented outline:
@@ -104,11 +117,14 @@ Hierarchical indented outline:
 
 # Critical Q&A
 6 or more critical questions with concise answers.
-Tag each answer with (Strong / Weak / Missing).
+Tag each answer with (Strong / Weak / Missing). Focus on uncertainty and
+decision risk, not another article recap.
 
 # Technical Details
 Key technical concepts, methodologies, data, benchmarks, or \
-implementation specifics discussed in the article.
+implementation specifics discussed in the article. Only include details not
+already explained in Deep-Structure Map, or details that need a
+numeric/configuration-level treatment.
 
 # Glossary
 Domain-specific terms, acronyms, or jargon that a general technical \
@@ -125,6 +141,8 @@ FORMAT RULES:
 - Be precise with numbers from the article
 - Do not hallucinate information not in the article
 - Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs
+- Before finalizing, remove repeated concept definitions, merge duplicate bullets,
+  and keep each headline metric in at most two places.
 """
 
 ARTICLE_USER_PROMPT_TEMPLATE = """\

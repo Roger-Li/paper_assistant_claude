@@ -67,6 +67,40 @@ Epsilon
             "Reading List",
         ]
 
+    def test_parse_prompt_style_h2_sections_under_title(self):
+        md = """# Paper Title
+
+## One-Pager
+Alpha
+
+## Deep-Structure Map
+### Problem
+Beta
+
+## Critical Q&A
+Gamma
+"""
+        sections = parse_summary_sections(md)
+        assert list(sections) == [
+            "One-Pager",
+            "Deep-Structure Map",
+            "Critical Q&A",
+        ]
+        assert sections["One-Pager"] == "Alpha"
+        assert "### Problem" in sections["Deep-Structure Map"]
+
+    def test_legacy_h1_sections_do_not_split_h2_subsections(self):
+        md = """# One-Pager
+Alpha
+
+# Deep-Structure Map
+## Problem
+Beta
+"""
+        sections = parse_summary_sections(md)
+        assert list(sections) == ["One-Pager", "Deep-Structure Map"]
+        assert "## Problem" in sections["Deep-Structure Map"]
+
 
 class TestFindOnePager:
     def test_exact_match(self):
