@@ -48,8 +48,8 @@ class Config(BaseModel):
     # TTS backend + MLX settings
     tts_backend: str = "mlx"  # "mlx" | "edge"
     mlx_tts_url: str = "http://127.0.0.1:8000"
-    mlx_tts_model: str = "Voxtral-4B-TTS-2603-mlx-bf16"
-    mlx_tts_voice: str | None = None
+    mlx_tts_model: str = "Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
+    mlx_tts_voice: str | None = "ryan"
     mlx_tts_speaker: str | None = None
     mlx_tts_api_key: str | None = None
     mlx_tts_timeout_s: float = 120.0

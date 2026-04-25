@@ -149,6 +149,12 @@ class TestSplitIntoChunks:
 
 
 class TestGetTtsBackend:
+    def test_default_mlx_model_matches_current_omlx_server(self, tmp_path):
+        config = Config(anthropic_api_key="k", data_dir=tmp_path)
+
+        assert config.mlx_tts_model == "Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
+        assert config.mlx_tts_voice == "ryan"
+
     def test_returns_mlx_by_default(self, tmp_path):
         config = Config(anthropic_api_key="k", data_dir=tmp_path)
         backend = get_tts_backend(config)

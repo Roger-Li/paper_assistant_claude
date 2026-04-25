@@ -63,8 +63,8 @@ Configuration resolution order is:
 | `PAPER_ASSIST_TTS_VOICE` | No | `en-US-AriaNeural` | edge-tts voice (used when `TTS_BACKEND=edge` or as MLX fallback). |
 | `PAPER_ASSIST_TTS_BACKEND` | No | `mlx` | `mlx` (local server) or `edge` (cloud edge-tts). |
 | `PAPER_ASSIST_MLX_TTS_URL` | No | `http://127.0.0.1:8000` | OpenAI-compatible `/v1/audio/speech` endpoint. |
-| `PAPER_ASSIST_MLX_TTS_MODEL` | No | `Voxtral-4B-TTS-2603-mlx-bf16` | Model name sent to the MLX server. |
-| `PAPER_ASSIST_MLX_TTS_VOICE` | No | none | Optional generic MLX/OpenAI-style `voice` field. On the current oMLX `/v1/audio/speech` server, this is the main knob for Qwen3-TTS CustomVoice models and should be set to a supported voice ID such as `ryan`. |
+| `PAPER_ASSIST_MLX_TTS_MODEL` | No | `Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit` | Model name sent to the MLX server. |
+| `PAPER_ASSIST_MLX_TTS_VOICE` | No | `ryan` | Generic MLX/OpenAI-style `voice` field. On the current oMLX `/v1/audio/speech` server, this is the main knob for Qwen3-TTS CustomVoice models and should be set to a supported voice ID. |
 | `PAPER_ASSIST_MLX_TTS_SPEAKER` | No | none | Optional model-specific selector forwarded as `speaker` when the backend/server supports it. Some OpenAI-compatible servers ignore this field and rely on `voice` only. |
 | `PAPER_ASSIST_MLX_TTS_API_KEY` | No | none | Bearer token forwarded to MLX if the server requires auth. |
 | `PAPER_ASSIST_MLX_TTS_TIMEOUT` | No | `120` | Per-request timeout in seconds. |

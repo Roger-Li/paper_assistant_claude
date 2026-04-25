@@ -69,9 +69,10 @@ For user-facing setup and usage, see [README.md](README.md).
    `/v1/audio/speech` endpoint at `config.mlx_tts_url`. `MlxTransientError`
    triggers edge fallback when `tts_edge_fallback` is set; `MlxConfigError`
    (4xx responses) does NOT fall back — the warning surfaces the misconfiguration.
+   `mlx_tts_model` defaults to `Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit`.
    `mlx_tts_voice` is the generic MLX/OpenAI-style selector and is the main
-   stable voice pin for the current oMLX Qwen3-TTS CustomVoice server. Use a
-   server-supported voice ID such as `ryan` there. `mlx_tts_speaker` is only a
+   stable voice pin for the current oMLX Qwen3-TTS CustomVoice server and defaults
+   to `ryan`. `mlx_tts_speaker` is only a
    best-effort model-specific selector for backends that explicitly support a
    separate `speaker` field; some OpenAI-compatible servers ignore it.
    ffmpeg is recommended (`brew install ffmpeg`) for long-paper multi-chunk MP3
