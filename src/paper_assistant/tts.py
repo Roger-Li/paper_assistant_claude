@@ -94,8 +94,15 @@ def _strip_markdown_for_speech(text: str, *, replace_equations: bool) -> str:
     text = re.sub(r"__(.+?)__", r"\1", text)
     text = re.sub(r"_(.+?)_", r"\1", text)
 
-    # Remove markdown links, keep text
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # Drop image markdown entirely so URLs aren't spoken. The alt text
+    # usually duplicates the surrounding figure prose, so keeping the alt
+    # makes the narration repeat itself; strip the whole token instead.
+    # Alt text can contain ``]`` (e.g. ``[CLS]`` tokens in ML captions),
+    # so tolerate inner brackets that aren't followed by the URL ``(``.
+    text = re.sub(r"!\[(?:[^\]]|\](?!\())*\]\([^)]+\)", "", text)
+
+    # Remove markdown links, keep text. Same nested-bracket tolerance.
+    text = re.sub(r"\[((?:[^\]]|\](?!\())*)\]\([^)]+\)", r"\1", text)
 
     # Remove code blocks (before inline code to avoid backtick conflicts)
     text = re.sub(r"```[\s\S]*?```", "", text)

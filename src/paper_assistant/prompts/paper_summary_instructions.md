@@ -40,6 +40,20 @@ Mission: turn any ML research paper into actionable insight for the user.
   figure so a reader who can't see the image still follows the method.
 - For result tables: call out the key rows/columns and what the
   numbers reveal (don't just say "see Table 2").
+- **Best-effort key visuals (1–3 max).** When the source markdown
+  exposes an image-backed figure (a line of the form
+  `![...](https://arxiv.org/html/<id>vK/xN.png)` immediately before a
+  `Figure N: ...` / `Table N: ...` caption), you MAY embed that exact
+  image as a Markdown line near the relevant discussion:
+  `![Figure N: short caption](https://arxiv.org/html/<id>vK/xN.png)`
+  - Copy the URL verbatim from the source — do **not** invent or
+    guess image paths.
+  - Pick at most 3 visuals across the whole summary, prioritising
+    architecture diagrams or headline result figures the reader needs
+    to grasp the method.
+  - Keep the prose description even when an image is embedded.
+  - If no matching image link exists for a figure/table you'd like to
+    show, skip it — leave the prose description and reference only.
 
 ### 6. Paper-faithful method explanations
 - In algorithm explanations, mark claims as needed:

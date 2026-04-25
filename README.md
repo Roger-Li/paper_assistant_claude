@@ -144,6 +144,14 @@ Useful flags:
 - `--skip-transcript`: generate audio straight from the raw summary instead of the derived narration script
 - `--force`: re-process if already present
 
+When the arXiv HTML markdown is available (the default Hugging Face retrieval path),
+the add pipeline injects up to three of the paper's image-backed figures or
+tables next to the first `Figure N` / `Table N` reference in the generated
+summary. Images are linked directly from `arxiv.org/html/...`, render in the
+web UI and Notion, and are stripped from the audio narration. If no matching
+HF image link is available, the summary keeps the prose description and skips
+the image instead of guessing.
+
 ### 2. Import your own summary
 
 ```bash

@@ -869,6 +869,56 @@ class TestMarkdownToBlocks:
         italic_items = [r for r in child_rt if r.get("annotations", {}).get("italic")]
         assert len(italic_items) == 1
 
+    def test_standalone_image_becomes_external_image_block(self):
+        md = "![Figure 1: caption text](https://arxiv.org/html/x/x1.png)"
+        blocks = _markdown_to_blocks(md)
+        image_blocks = _find_block(blocks, "image")
+        assert len(image_blocks) == 1
+        payload = image_blocks[0]["image"]
+        assert payload["type"] == "external"
+        assert payload["external"]["url"] == "https://arxiv.org/html/x/x1.png"
+        assert payload["caption"][0]["text"]["content"] == "Figure 1: caption text"
+
+    def test_standalone_image_without_caption_omits_caption(self):
+        md = "![](https://arxiv.org/html/x/x1.png)"
+        blocks = _markdown_to_blocks(md)
+        image_blocks = _find_block(blocks, "image")
+        assert len(image_blocks) == 1
+        payload = image_blocks[0]["image"]
+        assert payload["external"]["url"] == "https://arxiv.org/html/x/x1.png"
+        assert "caption" not in payload
+
+    def test_image_inside_prose_falls_back_to_paragraph_link(self):
+        md = "Look at ![Figure 1](https://arxiv.org/html/x/x1.png) closely."
+        blocks = _markdown_to_blocks(md)
+        # Mixed paragraph: rendered as a paragraph block, not an image block.
+        assert blocks[0]["type"] == "paragraph"
+        rt = _rich_text(blocks[0])
+        link_items = [r for r in rt if r.get("text", {}).get("link")]
+        assert link_items, "expected the inline image to render as a link"
+        assert link_items[0]["text"]["link"]["url"] == "https://arxiv.org/html/x/x1.png"
+
+    def test_relative_image_url_falls_back_to_paragraph(self):
+        # Notion's external image source rejects non-http URLs, so a
+        # relative path like figures/arch.png must not become an image
+        # block (which would abort the sync).
+        md = "![diagram](figures/arch.png)"
+        blocks = _markdown_to_blocks(md)
+        image_blocks = _find_block(blocks, "image")
+        assert not image_blocks
+        assert blocks[0]["type"] == "paragraph"
+        rt = _rich_text(blocks[0])
+        content = "".join(r.get("text", {}).get("content", "") for r in rt)
+        assert "diagram" in content
+        assert "figures/arch.png" in content
+
+    def test_data_uri_image_falls_back_to_paragraph(self):
+        md = "![inline](data:image/png;base64,AAAA)"
+        blocks = _markdown_to_blocks(md)
+        image_blocks = _find_block(blocks, "image")
+        assert not image_blocks
+        assert blocks[0]["type"] == "paragraph"
+
 
 @pytest.mark.asyncio
 async def test_append_blocks_tree_recursively_writes_deep_mixed_lists():
@@ -1302,3 +1352,25 @@ class TestBlocksToMarkdownRichFormatting:
         assert "**bold**" in result
         assert "`code`" in result
         assert "*italic*" in result
+
+    def test_external_image_block_renders_as_markdown_image(self):
+        blocks = [
+            {
+                "type": "image",
+                "image": {
+                    "type": "external",
+                    "external": {"url": "https://arxiv.org/html/x/x1.png"},
+                    "caption": [{"plain_text": "Figure 1: caption text"}],
+                },
+            }
+        ]
+        md = _blocks_to_markdown(blocks)
+        assert "![Figure 1: caption text](https://arxiv.org/html/x/x1.png)" in md
+
+    def test_image_block_roundtrip(self):
+        """Markdown image → Notion image block → markdown image."""
+        original = "![Figure 1: caption text](https://arxiv.org/html/x/x1.png)"
+        blocks = _markdown_to_blocks(original)
+        assert blocks[0]["type"] == "image"
+        result = _blocks_to_markdown(blocks)
+        assert original in result

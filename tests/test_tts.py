@@ -78,6 +78,28 @@ class TestPrepareTextForTts:
         text = prepare_text_for_tts("A\n\n\n\n\nB", "T", ["A"])
         assert "\n\n\n" not in text
 
+    def test_image_markdown_dropped(self):
+        md = "Before paragraph.\n\n![Figure 1: caption](https://arxiv.org/html/x/x1.png)\n\nAfter paragraph."
+        text = prepare_text_for_tts(md, "Title", ["A"])
+        # URL must never be spoken; alt text must not leak either.
+        assert "https://arxiv.org/html/x/x1.png" not in text
+        assert "![" not in text
+        assert "Figure 1: caption" not in text
+        assert "Before paragraph." in text
+        assert "After paragraph." in text
+
+    def test_image_markdown_with_brackets_in_alt_dropped(self):
+        # ML paper captions routinely include bracketed tokens like [CLS]
+        # or citation markers. The image stripper must still match.
+        md = "Before.\n\n![Figure 1: [CLS] token attention.](https://arxiv.org/html/x/x1.png)\n\nAfter."
+        text = prepare_text_for_tts(md, "Title", ["A"])
+        assert "https://arxiv.org/html/x/x1.png" not in text
+        assert "![" not in text
+        assert "[CLS]" not in text
+        assert "Figure 1:" not in text
+        assert "Before." in text
+        assert "After." in text
+
 class TestPrepareScriptForTts:
     def test_no_intro_prepended(self):
         script = "Today we're looking at VisualPRM. The authors tackle reward modeling."

@@ -292,6 +292,14 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             storage.add_paper(paper)
 
             result = await summarize_paper_text(config, metadata, paper_text)
+
+            from paper_assistant.visuals import enrich_summary_with_visuals
+
+            result.full_markdown = enrich_summary_with_visuals(
+                full_markdown=result.full_markdown,
+                source_markdown=paper_text,
+            )
+
             summary_content = format_summary_file(metadata, result)
             storage.save_summary(arxiv_id, summary_content)
             paper = storage.get_paper(arxiv_id)

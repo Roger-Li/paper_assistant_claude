@@ -83,6 +83,17 @@ For user-facing setup and usage, see [README.md](README.md).
    YAML front matter + the duplicated title/metadata header from stored summaries.
    All edit/regen/narration entry points should use it when loading from disk.
 
+5e. **Best-effort key visuals are injected by `visuals.enrich_summary_with_visuals()`.**
+   The built-in CLI/web arXiv add flows pass the HF arXiv-HTML markdown body
+   into the helper after Claude returns the summary; up to 3 image-backed
+   figure/table candidates are injected near their first `Fig. N` / `Figure N`
+   reference. The helper is idempotent — already-present URLs are skipped.
+   Skill-driven imports do not run this helper; the agent embeds the same
+   `![Figure N: caption](https://arxiv.org/html/<id>vK/xN.png)` lines per the
+   shared `paper_summary_instructions.md` (and per `skills/codex/summarize-paper/SKILL.md`).
+   Image markdown is stripped from TTS input by `_strip_markdown_for_speech` and
+   round-trips into Notion as external image blocks via `_image_node_to_block`.
+
 5b. **Browser Reader Mode was removed.** (2026-04-17, roadmap 2d.)
    The client-side Web Speech feature was dropped because it drifted out of sync
    with the transcript-backed MLX audio pipeline. The saved MP3 player on the
@@ -177,7 +188,7 @@ Target files:
 - `tests/test_summarizer.py` — section parsing + `normalize_summary_body`
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
-- `tests/test_notion.py` — sync conflict/merge rules
+- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 - `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)
@@ -185,6 +196,7 @@ Target files:
 - `tests/test_audio_script.py` — Claude narration script generation
 - `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
 - `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
+- `tests/test_visuals.py` — visual extraction + best-effort injection (invariant 5e)
 
 ## Definition of Done
 

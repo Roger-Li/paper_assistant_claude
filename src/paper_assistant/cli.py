@@ -200,6 +200,13 @@ async def _add_arxiv_paper(
             paper_text = extract_text_from_pdf(pdf_path)
             result = await summarize_paper_text(config, metadata, paper_text)
 
+        from paper_assistant.visuals import enrich_summary_with_visuals
+
+        result.full_markdown = enrich_summary_with_visuals(
+            full_markdown=result.full_markdown,
+            source_markdown=paper_text,
+        )
+
         summary_content = format_summary_file(metadata, result)
         summary_path = storage.save_summary(paper_id, summary_content)
         paper = storage.get_paper(paper_id)  # Re-fetch with updated summary_path

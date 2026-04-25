@@ -59,6 +59,15 @@ Use this skill when the user wants a paper summarized and stored through Paper A
      method definitions across sections, keep headline metrics in at most two
      places, and make later sections add mechanism, evidence, caveat,
      implementation detail, or contrast.
+   - **Best-effort key visuals (per Global Policy §5).** Scan the fetched
+     `paper.md` for image-backed figures of the form
+     `![...](https://arxiv.org/html/<id>vK/xN.png)` followed by a
+     `Figure N: ...` / `Table N: ...` caption. For up to 3 of the most
+     crucial visuals (architecture diagrams or headline result figures),
+     embed the exact image Markdown line — `![Figure N: short caption](url)` —
+     near the relevant discussion in the summary. Copy URLs verbatim;
+     skip rather than guess. The prose description still belongs in the
+     summary even when an image is embedded.
 9. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
 10. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.

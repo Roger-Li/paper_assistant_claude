@@ -319,6 +319,15 @@ def _inline_to_rich_text(
             items.append({"type": "equation", "equation": {"expression": expr}})
         elif ntype == "softbreak":
             items.append({"type": "text", "text": {"content": "\n"}})
+        elif ntype == "image":
+            url = node.get("attrs", {}).get("url", "")
+            alt_text = _image_alt_text(node) or url
+            rt = {"type": "text", "text": {"content": alt_text}}
+            if url:
+                rt["text"]["link"] = {"url": url}
+            if annotations:
+                rt["annotations"] = {**annotations}
+            items.append(rt)
         else:
             # Fallback: render raw text if present
             raw = node.get("raw", "")
@@ -355,6 +364,49 @@ def _children_rich_text(node: dict[str, Any]) -> list[dict[str, Any]]:
     children = node.get("children", [])
     items = _inline_to_rich_text(children)
     return _chunk_rich_text(items) or _to_rich_text("")
+
+
+def _image_alt_text(node: dict[str, Any]) -> str:
+    """Flatten the alt-text children of a mistune `image` node to a string."""
+    parts: list[str] = []
+    for child in node.get("children", []) or []:
+        raw = child.get("raw", "")
+        if raw:
+            parts.append(raw)
+    return "".join(parts).strip()
+
+
+def _is_absolute_http_url(url: str) -> bool:
+    return bool(url) and url.lower().startswith(("http://", "https://"))
+
+
+def _image_node_to_block(node: dict[str, Any]) -> dict[str, Any]:
+    """Convert a mistune `image` node into a Notion block.
+
+    Notion's external image source only accepts absolute http(s) URLs.
+    Relative paths, ``data:`` URIs, etc. are rejected and abort the
+    page sync, so fall back to a paragraph block that surfaces the
+    alt text (and raw target) instead.
+    """
+    url = node.get("attrs", {}).get("url", "")
+    alt_text = _image_alt_text(node)
+    if _is_absolute_http_url(url):
+        payload: dict[str, Any] = {
+            "type": "external",
+            "external": {"url": url},
+        }
+        if alt_text:
+            payload["caption"] = _to_rich_text(alt_text)
+        return {"object": "block", "type": "image", "image": payload}
+    if alt_text and url:
+        display = f"{alt_text} ({url})"
+    else:
+        display = alt_text or url
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": _to_rich_text(display)},
+    }
 
 
 def _block_text_rich_text(node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -444,6 +496,10 @@ def _ast_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
         ]
 
     if ntype == "paragraph":
+        children = node.get("children", []) or []
+        meaningful = [c for c in children if c.get("type") != "softbreak"]
+        if len(meaningful) == 1 and meaningful[0].get("type") == "image":
+            return [_image_node_to_block(meaningful[0])]
         rt = _children_rich_text(node)
         return [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": rt}}]
 
@@ -639,6 +695,19 @@ def _blocks_to_markdown(blocks: list[dict[str, Any]], indent: int = 0) -> str:
             lines.append(f"{prefix}$$")
         elif block_type == "divider":
             lines.append(f"{prefix}---")
+        elif block_type == "image":
+            image_payload = block.get("image", {}) or {}
+            image_type = image_payload.get("type")
+            if image_type == "external":
+                url = image_payload.get("external", {}).get("url", "")
+            elif image_type == "file":
+                url = image_payload.get("file", {}).get("url", "")
+            else:
+                url = ""
+            caption_rt = image_payload.get("caption", []) or []
+            caption = _read_plain_text(caption_rt).strip()
+            if url:
+                lines.append(f"{prefix}![{caption}]({url})")
         elif block_type == "table":
             table_rows = payload.get("children", [])
             for i, row_block in enumerate(table_rows):

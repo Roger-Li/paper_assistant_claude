@@ -751,6 +751,21 @@ article table {
   margin: 1rem 0;
 }
 
+article img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25rem auto;
+  border-radius: var(--pa-radius);
+  box-shadow: var(--pa-shadow-sm);
+  background: var(--pa-surface-1);
+}
+
+article p:has(> img:only-child) {
+  text-align: center;
+  margin: 0;
+}
+
 article h1 {
   font-family: var(--pa-font-display);
   font-size: 1.55rem;
