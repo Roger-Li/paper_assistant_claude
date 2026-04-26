@@ -115,12 +115,19 @@ For user-facing setup and usage, see [README.md](README.md).
    Search failures never break primary operations.
    `search/` directory contains derived docs (`{paper_id}.md`) — never index raw summary files.
    Single-paper mutations use `sync_paper()`; multi-paper mutations use `batch_sync()`.
+   Both methods refresh BM25 *and* embeddings — they invoke `qmd update` followed
+   by `qmd embed` (incremental, content-hash tracked, ~170 ms when nothing is
+   pending). Without the embed step, every newly imported or Notion-edited paper
+   would land in BM25 but skip the vector index, silently degrading hybrid
+   search to text mode.
    `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
    Every qmd invocation passes `--index <qmd_index_name>` for isolation.
    Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) everywhere:
    CLI, web API, web UI, and skill workflows.
    When embeddings are missing, hybrid/vector automatically falls back to text (BM25) with a warning.
-   Run `paper-assist index-rebuild --embed` to enable full hybrid search.
+   `paper-assist index-rebuild --embed` is a bulk-recovery tool (full re-index +
+   embed pass) for cases where the incremental hooks haven't run — bulk imports
+   from another host, restoring after a `cleanup`, or out-of-band edits.
 
 8. **Notion sync should remain manual and non-destructive by default.**
    `sync_notion(..., dry_run=True)` must not mutate local or Notion state.

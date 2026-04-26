@@ -217,6 +217,12 @@ class TestSearchDocGeneration:
         assert "One-Pager" in content
         assert "This is the summary body." in content
 
+        # sync_paper must run BOTH qmd update (BM25) and qmd embed (vectors),
+        # otherwise hybrid search degrades silently for newly-imported papers.
+        subcommands = [c[0][0][-1] for c in mock_run.call_args_list]
+        assert subcommands.count("update") == 1
+        assert subcommands.count("embed") == 1
+
     def test_sync_paper_noop_without_summary(self, tmp_path):
         config = _make_config(tmp_path)
         storage = StorageManager(config)
@@ -305,14 +311,15 @@ class TestBatchSync:
             mgr = SearchManager(config)
             mgr.batch_sync(["2503.10291", "2503.99999"], storage)
 
-        assert (tmp_path / "search" / "2503.10291.md").exists()
         assert (tmp_path / "search" / "2503.99999.md").exists()
-        # Should call update exactly once
-        update_calls = [
-            c for c in mock_run.call_args_list
-            if "update" in c[0][0]
-        ]
+        assert (tmp_path / "search" / "2503.10291.md").exists()
+        # Both qmd update and qmd embed must run exactly once across the batch:
+        # writing per-paper is fine, but invoking qmd twice per paper would be
+        # wasteful and embedding only some of them would leave hybrid degraded.
+        update_calls = [c for c in mock_run.call_args_list if "update" in c[0][0]]
+        embed_calls = [c for c in mock_run.call_args_list if "embed" in c[0][0]]
         assert len(update_calls) == 1
+        assert len(embed_calls) == 1
 
 
 # --- rebuild_all ---

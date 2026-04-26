@@ -73,12 +73,13 @@ class SearchManager:
                 raise
 
     def sync_paper(self, paper_id: str, storage: StorageManager) -> None:
-        """Regenerate search doc for one paper, then run qmd update."""
+        """Regenerate search doc for one paper, then refresh BM25 and embeddings."""
         paper = storage.get_paper(paper_id)
         if paper is None or paper.summary_path is None:
             return
         self._write_search_doc(paper_id, storage)
         self._run_qmd(["update"])
+        self._run_qmd(["embed"])
 
     def delete_paper(self, paper_id: str) -> None:
         """Remove search doc and run qmd update."""
@@ -88,13 +89,14 @@ class SearchManager:
         self._run_qmd(["update"])
 
     def batch_sync(self, paper_ids: Iterable[str], storage: StorageManager) -> None:
-        """Regenerate search docs for multiple papers, single qmd update."""
+        """Regenerate search docs for multiple papers, single update + embed pass."""
         for pid in paper_ids:
             paper = storage.get_paper(pid)
             if paper is None or paper.summary_path is None:
                 continue
             self._write_search_doc(pid, storage)
         self._run_qmd(["update"])
+        self._run_qmd(["embed"])
 
     def rebuild_all(self, storage: StorageManager) -> None:
         """Regenerate ALL search docs from index, single qmd update."""
@@ -116,7 +118,8 @@ class SearchManager:
         self._run_qmd(["update"])
 
     def generate_embeddings(self) -> None:
-        """Run qmd embed. Expensive, user-triggered only."""
+        """Bulk embed pass for `index-rebuild --embed`. Sync hooks already embed
+        incrementally; this is the recovery path for out-of-band drift."""
         self._run_qmd(["embed"])
 
     def search(

@@ -362,9 +362,6 @@ paper-assist index-rebuild --embed
 # Default: hybrid search (BM25 + vector + LLM re-ranking, requires embeddings)
 paper-assist search "attention mechanisms"
 
-# Generate embeddings (required for hybrid/vector; run once after index-setup, then after index-rebuild)
-paper-assist index-rebuild --embed
-
 # Text-only search (BM25, works without embeddings)
 paper-assist search "reward models" --mode text
 
@@ -375,7 +372,7 @@ paper-assist search "papers about reward shaping" --mode vector
 paper-assist search "test query" --json
 ```
 
-The default search mode is **hybrid** (BM25 + vector embeddings + LLM re-ranking) for best relevance. When embeddings are not yet generated, search automatically falls back to text (BM25) with a warning. Run `paper-assist index-rebuild --embed` to enable full hybrid search.
+The default search mode is **hybrid** (BM25 + vector embeddings + LLM re-ranking) for best relevance. Imports and Notion sync keep both BM25 and embeddings up to date automatically; `paper-assist index-rebuild --embed` is only needed for initial setup over an existing library or to recover from out-of-band drift (e.g., bulk imports from another host).
 
 The web UI shows a search bar when qmd is enabled. The API endpoint is `GET /api/search?q=<query>&limit=10&mode=hybrid`.
 
