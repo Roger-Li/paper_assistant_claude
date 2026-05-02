@@ -174,7 +174,7 @@
             <td>
                 <select class="reading-status-select" data-paper-id="{{ p.metadata.paper_id }}"
                         onchange="updateReadingStatus(this)">
-                    {% for rs in ["unread", "read", "archived"] %}
+                    {% for rs in all_reading_statuses %}
                     <option value="{{ rs }}" {% if p.reading_status.value == rs %}selected{% endif %}>{{ rs | capitalize }}</option>
                     {% endfor %}
                 </select>

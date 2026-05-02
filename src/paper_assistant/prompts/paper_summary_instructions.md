@@ -141,20 +141,20 @@ Indented bullets following this skeleton:
 - **Problem**: What gap or failure mode motivates this work?
 
 - **Method — Core Algorithm Walkthrough** (adaptive depth per §7):
-  1. Inputs / assumptions
-  2. Major components and their roles
-  3. Step-by-step pipeline / forward pass
-  4. Training objective(s) + optimization signal
-  5. Inference procedure (if different from training)
-  6. Key equations (rendered in LaTeX blocks; annotate each
+   - Inputs / assumptions
+   - Major components and their roles
+   - Step-by-step pipeline / forward pass
+   - Training objective(s) + optimization signal
+   - Inference procedure (if different from training)
+   - Key equations (rendered in LaTeX blocks; annotate each
      equation with ≤3 sentences on what each term does and
      *why* it's designed that way)
-  7. Concise pseudocode (paper-faithful)
-  8. Complexity / scaling notes (if reported; else "Not in paper")
-  9. What ablations reveal about each component (if ablations exist)
-  - Use **[Paper] / [Inference] / [Common practice]** tags only where
+   - Concise pseudocode (paper-faithful)
+   - Complexity / scaling notes (if reported; else "Not in paper")
+   - What ablations reveal about each component (if ablations exist)
+   - Use **[Paper] / [Inference] / [Common practice]** tags only where
     ambiguity matters — don't litter every sentence.
-  - When a figure (e.g., architecture diagram) is the clearest
+   - When a figure (e.g., architecture diagram) is the clearest
     explanation of the pipeline, narrate it per Global Policy §5.
 
 - **Experiments**: Datasets, baselines, metrics, headline numbers.

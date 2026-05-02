@@ -20,6 +20,7 @@ class ProcessingStatus(str, Enum):
 
 class ReadingStatus(str, Enum):
     UNREAD = "unread"
+    READING = "reading"
     READ = "read"
     ARCHIVED = "archived"
 
