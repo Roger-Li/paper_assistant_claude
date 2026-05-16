@@ -93,6 +93,7 @@ Default path: `~/.paper-assistant/`
 ```text
 ~/.paper-assistant/
 ├── papers/     # [Paper][{paper_id}] {title}.md / [Note][{paper_id}] {title}.md
+├── transcripts/ # {paper_id}.md narration scripts
 ├── audio/      # {paper_id}.mp3
 ├── pdfs/       # {arxiv_id}.pdf (arXiv papers only)
 ├── search/     # {paper_id}.md — derived search docs (auto-managed by qmd integration)
@@ -116,6 +117,8 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
 | `paper-assist serve` | Start local web app |
 | `paper-assist regenerate-feed` | Rebuild RSS feed from index |
+| `paper-assist bundle export <bundle.zip>` | Export local records and assets to a Notion-free portable bundle |
+| `paper-assist bundle import <bundle.zip>` | Import a portable bundle, skipping existing paper IDs by default |
 | `paper-assist search "<query>"` | Search papers (hybrid by default; `--mode text\|vector\|hybrid`, `--limit`, `--json`) |
 | `paper-assist index-setup` | Create qmd collection and rebuild all search docs |
 | `paper-assist index-rebuild` | Regenerate all search docs (`--embed` to also generate embeddings) |
@@ -204,6 +207,34 @@ paper-assist notion-sync
 # run sync for one paper
 paper-assist notion-sync --paper 2503.10291
 ```
+
+### 7. Move work between laptops without Notion
+
+Portable bundles are zip files containing `manifest.json` plus the referenced
+summary, transcript, audio, and PDF assets. Notion linkage fields are omitted
+from exports. Import skips existing paper IDs by default; `--force` explicitly
+merges over existing records while preserving local Notion metadata and merging
+tags by union.
+
+```bash
+# Work laptop: create summaries locally, then export all papers
+paper-assist bundle export ~/Desktop/paper-assistant-work.zip
+
+# Or export only selected papers
+paper-assist bundle export ~/Desktop/paper-assistant-work.zip --paper 2503.10291
+
+# Personal laptop: merge the bundle locally; this does not call Notion
+paper-assist bundle import ~/Desktop/paper-assistant-work.zip
+
+# Personal laptop only, if desired after review
+paper-assist notion-sync
+```
+
+Use `paper-assist bundle import --dry-run <bundle.zip>` to preview the merge.
+Use `paper-assist bundle import --force <bundle.zip>` only when you intentionally
+want the bundle copy to update an existing local record.
+After a real import, the RSS feed is regenerated and qmd search is refreshed when
+search is enabled.
 
 ## Audio
 

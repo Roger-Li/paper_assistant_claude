@@ -9,6 +9,7 @@ For user-facing setup and usage, see [README.md](README.md).
 - `index.json` is the only state database. `StorageManager` re-reads from disk each call — never cache instances across operations.
 - Config resolution: CLI flag > env var > `.env` > default.
 - `ANTHROPIC_API_KEY` is optional at load time; validated lazily in `summarizer.py` at point of use. Read-only commands (`search`, `list`, `serve`) work without it.
+- `paper-assist bundle export/import` is a local-only laptop transfer path. It must not call Notion.
 - Design docs for implemented features live in `docs/`. Roadmap is in `docs/roadmap.md`.
 
 ## Critical Invariants
@@ -33,8 +34,15 @@ For user-facing setup and usage, see [README.md](README.md).
    - `skip_transcript=True` alone: preserve `transcript_path`; regenerate audio from raw summary.
    - Neither flag: clear both and regenerate through `render_audio_assets()`.
 
+1e. **Portable bundle import/export is Notion-free.**
+   `bundle export` omits `notion_page_id`, `notion_modified_at`, and `last_synced_at`.
+   `bundle import` skips existing `paper_id`s by default. With `--force`, it
+   preserves existing local Notion metadata, `date_added`, `reading_status`, and
+   `archived_at`; tags merge by union. Import may refresh local RSS/search, but
+   it must not run Notion sync.
+
 2. **Keep `index.json` and file paths consistent.**
-   `pdf_path`, `summary_path`, and `audio_path` are stored relative to `data_dir`.
+   `pdf_path`, `summary_path`, `transcript_path`, and `audio_path` are stored relative to `data_dir`.
 
 3. **Maintain sync metadata correctly.**
    `local_modified_at` must update when summary/tags/reading-status are edited locally.

@@ -1127,6 +1127,154 @@ def regenerate_feed(ctx: click.Context) -> None:
     console.print(f"[green]Feed regenerated:[/green] {config.feed_path}")
 
 
+@main.group("bundle")
+def bundle_group() -> None:
+    """Export and import portable local paper bundles."""
+
+
+@bundle_group.command("export")
+@click.argument("output", type=click.Path(dir_okay=False))
+@click.option("--paper", "paper_ids", multiple=True, help="Export only this paper ID; repeatable.")
+@click.option("--json", "json_output", is_flag=True, help="Output export report as JSON.")
+@click.pass_context
+def bundle_export(
+    ctx: click.Context,
+    output: str,
+    paper_ids: tuple[str, ...],
+    json_output: bool,
+) -> None:
+    """Export local records and assets to a portable zip bundle.
+
+    Notion linkage metadata is stripped from the bundle.
+    """
+    from paper_assistant.bundle import export_bundle
+    from paper_assistant.config import load_config
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**ctx.obj)
+    storage = StorageManager(config)
+
+    try:
+        report = export_bundle(
+            config,
+            storage,
+            Path(output),
+            paper_ids=paper_ids or None,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json_output:
+        click.echo(json.dumps({
+            "bundle_path": str(report.bundle_path),
+            "exported_papers": report.exported_papers,
+            "exported_files": report.exported_files,
+            "paper_ids": report.paper_ids,
+            "warnings": report.warnings,
+        }, indent=2))
+        return
+
+    console.print(f"[green]Bundle exported:[/green] {report.bundle_path}")
+    console.print(
+        f"  Papers: {report.exported_papers}  Files: {report.exported_files}"
+    )
+    console.print("  Notion metadata: stripped")
+    if report.warnings:
+        console.print("[yellow]Warnings:[/yellow]")
+        for warning in report.warnings:
+            console.print(f"  - {warning}")
+
+
+@bundle_group.command("import")
+@click.argument("bundle_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--paper", "paper_ids", multiple=True, help="Import only this paper ID; repeatable.")
+@click.option("--dry-run", is_flag=True, help="Preview the merge without writing files.")
+@click.option("--force", is_flag=True, help="Merge over existing paper IDs instead of skipping them.")
+@click.option("--json", "json_output", is_flag=True, help="Output import report as JSON.")
+@click.pass_context
+def bundle_import(
+    ctx: click.Context,
+    bundle_path: str,
+    paper_ids: tuple[str, ...],
+    dry_run: bool,
+    force: bool,
+    json_output: bool,
+) -> None:
+    """Import a portable zip bundle into the local library."""
+    from paper_assistant.bundle import import_bundle
+    from paper_assistant.config import load_config
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**ctx.obj)
+    storage = StorageManager(config)
+
+    try:
+        report = import_bundle(
+            config,
+            storage,
+            Path(bundle_path),
+            paper_ids=paper_ids or None,
+            dry_run=dry_run,
+            force=force,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    feed_warning: str | None = None
+    search_warning: str | None = None
+    if not dry_run and report.touched_paper_ids:
+        try:
+            from paper_assistant.podcast import generate_feed
+
+            generate_feed(config, storage.list_papers())
+        except Exception as exc:
+            feed_warning = f"Feed regeneration failed: {exc}"
+
+        try:
+            from paper_assistant.search import get_search_manager
+
+            search_mgr = get_search_manager(config)
+            if search_mgr:
+                search_mgr.batch_sync(report.touched_paper_ids, storage)
+        except Exception as exc:
+            search_warning = f"Search index update failed: {exc}"
+
+    warnings = [*report.warnings]
+    if feed_warning:
+        warnings.append(feed_warning)
+    if search_warning:
+        warnings.append(search_warning)
+
+    if json_output:
+        click.echo(json.dumps({
+            "created": report.created,
+            "updated": report.updated,
+            "skipped": report.skipped,
+            "imported_files": report.imported_files,
+            "paper_ids": report.paper_ids,
+            "dry_run": dry_run,
+            "force": force,
+            "warnings": warnings,
+        }, indent=2))
+        return
+
+    label = "Bundle import preview" if dry_run else "Bundle imported"
+    console.print(f"[green]{label}:[/green] {bundle_path}")
+    console.print(
+        "  Created: {created}  Updated: {updated}  Skipped: {skipped}  Files: {files}".format(
+            created=report.created,
+            updated=report.updated,
+            skipped=report.skipped,
+            files=report.imported_files,
+        )
+    )
+    console.print("  Notion sync: not run")
+    if warnings:
+        console.print("[yellow]Warnings:[/yellow]")
+        for warning in warnings:
+            console.print(f"  - {warning}")
+
+
 @main.command("search")
 @click.argument("query")
 @click.option("--limit", "-n", default=10, show_default=True, help="Maximum number of results.")
