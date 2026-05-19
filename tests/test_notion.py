@@ -15,6 +15,8 @@ from paper_assistant.notion import (
     NotionClient,
     NotionPaper,
     sync_notion,
+    _LOCAL_UPLOAD_SENTINEL,
+    _looks_like_local_image_path,
     _markdown_to_blocks,
     _blocks_to_markdown,
     _normalize_code_language,
@@ -103,7 +105,16 @@ class FakeNotionClient:
     async def list_papers(self) -> list[NotionPaper]:
         return list(self.remote_papers)
 
-    async def create_page(self, *, paper, summary_markdown, summary_modified_at, include_audio):
+    async def create_page(
+        self,
+        *,
+        paper,
+        summary_markdown,
+        summary_modified_at,
+        include_audio,
+        image_base_dir=None,
+        upload_images=False,
+    ):
         pid = paper.metadata.paper_id
         self.created_calls.append(pid)
         created = NotionPaper(
@@ -134,6 +145,8 @@ class FakeNotionClient:
         summary_modified_at,
         include_audio,
         archived,
+        image_base_dir=None,
+        upload_images=False,
     ):
         self.updated_calls.append(page_id)
         return NotionPaper(
@@ -898,19 +911,19 @@ class TestMarkdownToBlocks:
         assert link_items, "expected the inline image to render as a link"
         assert link_items[0]["text"]["link"]["url"] == "https://arxiv.org/html/x/x1.png"
 
-    def test_relative_image_url_falls_back_to_paragraph(self):
-        # Notion's external image source rejects non-http URLs, so a
-        # relative path like figures/arch.png must not become an image
-        # block (which would abort the sync).
-        md = "![diagram](figures/arch.png)"
+    def test_relative_image_url_becomes_upload_placeholder(self):
+        # A local/relative image path is parsed into a placeholder image
+        # block, resolved later by NotionClient._resolve_image_uploads. It
+        # must never reach the Notion API as a raw non-http image block.
+        md = "![diagram](/images/2605.13779/arch.png)"
         blocks = _markdown_to_blocks(md)
         image_blocks = _find_block(blocks, "image")
-        assert not image_blocks
-        assert blocks[0]["type"] == "paragraph"
-        rt = _rich_text(blocks[0])
-        content = "".join(r.get("text", {}).get("content", "") for r in rt)
-        assert "diagram" in content
-        assert "figures/arch.png" in content
+        assert len(image_blocks) == 1
+        payload = image_blocks[0]["image"]
+        assert payload["type"] == _LOCAL_UPLOAD_SENTINEL
+        spec = payload[_LOCAL_UPLOAD_SENTINEL]
+        assert spec["path"] == "/images/2605.13779/arch.png"
+        assert spec["alt"] == "diagram"
 
     def test_data_uri_image_falls_back_to_paragraph(self):
         md = "![inline](data:image/png;base64,AAAA)"
@@ -1374,3 +1387,170 @@ class TestBlocksToMarkdownRichFormatting:
         assert blocks[0]["type"] == "image"
         result = _blocks_to_markdown(blocks)
         assert original in result
+
+
+# ---------------------------------------------------------------------------
+# Local figure image upload to Notion (file_upload blocks)
+# ---------------------------------------------------------------------------
+
+
+class TestLooksLikeLocalImagePath:
+    def test_local_paths_are_images(self):
+        assert _looks_like_local_image_path("/images/2605.13779/fig1.png")
+        assert _looks_like_local_image_path("figures/arch.JPG")
+        assert _looks_like_local_image_path("a/b/c.jpeg")
+        assert _looks_like_local_image_path("plot.webp?v=2#frag")
+
+    def test_remote_and_non_image_paths_excluded(self):
+        assert not _looks_like_local_image_path("https://arxiv.org/html/x/x1.png")
+        assert not _looks_like_local_image_path("http://example.com/a.png")
+        assert not _looks_like_local_image_path("data:image/png;base64,AAAA")
+        assert not _looks_like_local_image_path("mailto:a@b.com")
+        assert not _looks_like_local_image_path("notes.txt")
+        assert not _looks_like_local_image_path("/images/no-extension")
+        assert not _looks_like_local_image_path("")
+
+
+class _StubUploadClient(NotionClient):
+    """NotionClient whose _upload_file records calls instead of hitting the API."""
+
+    def __init__(self) -> None:
+        super().__init__("token", "db")
+        self.uploads: list[tuple[Path, str]] = []
+        self.fail = False
+
+    async def _upload_file(self, file_path, *, content_type="audio/mpeg"):
+        if self.fail:
+            raise RuntimeError("simulated upload failure")
+        self.uploads.append((Path(file_path), content_type))
+        return f"upload-{len(self.uploads)}"
+
+
+def _placeholder_block(path: str, alt: str) -> dict:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": _LOCAL_UPLOAD_SENTINEL,
+            _LOCAL_UPLOAD_SENTINEL: {"path": path, "alt": alt},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolve_uploads_local_image_to_file_upload_block(tmp_path):
+    img_dir = tmp_path / "images" / "2605.13779"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig1.png").write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes")
+    blocks = _markdown_to_blocks("![Figure 1: overview](/images/2605.13779/fig1.png)")
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(
+        blocks, image_base_dir=tmp_path, enabled=True
+    )
+
+    assert len(client.uploads) == 1
+    assert client.uploads[0][1] == "image/png"
+    payload = blocks[0]["image"]
+    assert blocks[0]["type"] == "image"
+    assert payload["type"] == "file_upload"
+    assert payload["file_upload"]["id"] == "upload-1"
+    assert payload["caption"][0]["text"]["content"] == "Figure 1: overview"
+
+
+@pytest.mark.asyncio
+async def test_resolve_dedupes_repeated_paths(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [
+        _placeholder_block("/images/f.png", "A"),
+        _placeholder_block("/images/f.png", "B"),
+    ]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert len(client.uploads) == 1  # uploaded once, reused
+    assert blocks[0]["image"]["file_upload"]["id"] == "upload-1"
+    assert blocks[1]["image"]["file_upload"]["id"] == "upload-1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing_file_falls_back_to_paragraph(tmp_path):
+    blocks = [_placeholder_block("/images/missing.png", "diagram")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert not client.uploads
+    assert blocks[0]["type"] == "paragraph"
+    content = "".join(
+        r.get("text", {}).get("content", "")
+        for r in blocks[0]["paragraph"]["rich_text"]
+    )
+    assert "diagram" in content and "/images/missing.png" in content
+
+
+@pytest.mark.asyncio
+async def test_resolve_disabled_degrades_without_upload(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [_placeholder_block("/images/f.png", "diagram")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=False)
+
+    assert not client.uploads
+    assert blocks[0]["type"] == "paragraph"
+
+
+@pytest.mark.asyncio
+async def test_resolve_upload_failure_degrades_to_paragraph(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [_placeholder_block("/images/f.png", "diagram")]
+    client = _StubUploadClient()
+    client.fail = True
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert blocks[0]["type"] == "paragraph"  # never raises; degrades
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_path_traversal(tmp_path):
+    base = tmp_path / "data"
+    base.mkdir()
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"x")
+    blocks = [_placeholder_block("/../secret.png", "x")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=base, enabled=True)
+
+    assert not client.uploads  # escaped base -> not uploaded
+    assert blocks[0]["type"] == "paragraph"
+
+
+@pytest.mark.asyncio
+async def test_resolve_recurses_into_children(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "c.png").write_bytes(b"x")
+    blocks = [
+        {
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {
+                "rich_text": [],
+                "children": [_placeholder_block("/images/c.png", "nested")],
+            },
+        }
+    ]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    child = blocks[0]["bulleted_list_item"]["children"][0]
+    assert len(client.uploads) == 1
+    assert child["type"] == "image"
+    assert child["image"]["type"] == "file_upload"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import mimetypes
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,14 @@ from paper_assistant.summarizer import (
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+
+# Sentinel image-block type used between markdown parsing and the async upload
+# pass: a local/relative figure path that must be uploaded to Notion before it
+# can become a real image block. Never sent to the Notion API as-is.
+_LOCAL_UPLOAD_SENTINEL = "_pa_local_upload"
+_UPLOAD_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+# Notion single-part file upload accepts files up to 20 MiB.
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 # Notion's supported code block language values.
 NOTION_LANGUAGES: set[str] = {
@@ -380,13 +389,65 @@ def _is_absolute_http_url(url: str) -> bool:
     return bool(url) and url.lower().startswith(("http://", "https://"))
 
 
+def _looks_like_local_image_path(url: str) -> bool:
+    """True for a non-remote path that points at an uploadable image file.
+
+    Excludes http(s) (handled as external images), ``data:``/``mailto:`` and
+    other schemes. The extension test ignores any query/fragment suffix.
+    """
+    if not url:
+        return False
+    low = url.lower()
+    if low.startswith(("http://", "https://", "data:", "mailto:", "tel:")):
+        return False
+    path_part = low.split("?", 1)[0].split("#", 1)[0]
+    ext = path_part.rsplit(".", 1)[-1] if "." in path_part else ""
+    return ext in _UPLOAD_IMAGE_EXTS
+
+
+def _image_fallback_text(alt_text: str, url: str) -> str:
+    if alt_text and url:
+        return f"{alt_text} ({url})"
+    return alt_text or url
+
+
+def _set_paragraph_block(block: dict[str, Any], text: str) -> None:
+    """Rewrite ``block`` in place into a plain paragraph (graceful fallback)."""
+    block.clear()
+    block.update(
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": _to_rich_text(text)},
+        }
+    )
+
+
+def _set_uploaded_image_block(
+    block: dict[str, Any], upload_id: str, alt_text: str
+) -> None:
+    """Rewrite ``block`` in place into a Notion-hosted file_upload image."""
+    image: dict[str, Any] = {
+        "type": "file_upload",
+        "file_upload": {"id": upload_id},
+    }
+    if alt_text:
+        image["caption"] = _to_rich_text(alt_text)
+    block.clear()
+    block.update({"object": "block", "type": "image", "image": image})
+
+
 def _image_node_to_block(node: dict[str, Any]) -> dict[str, Any]:
     """Convert a mistune `image` node into a Notion block.
 
-    Notion's external image source only accepts absolute http(s) URLs.
-    Relative paths, ``data:`` URIs, etc. are rejected and abort the
-    page sync, so fall back to a paragraph block that surfaces the
-    alt text (and raw target) instead.
+    - Absolute http(s) URL -> external image block.
+    - Local/relative image path -> a ``_LOCAL_UPLOAD_SENTINEL`` placeholder
+      image block, resolved later by ``NotionClient._resolve_image_uploads``
+      (uploaded as a Notion-hosted file). If upload is disabled or fails it
+      degrades to the paragraph fallback below.
+    - Anything else (``data:`` URIs, non-image targets) -> paragraph block
+      surfacing the alt text (and raw target), since Notion rejects those
+      and would otherwise abort the page sync.
     """
     url = node.get("attrs", {}).get("url", "")
     alt_text = _image_alt_text(node)
@@ -398,14 +459,19 @@ def _image_node_to_block(node: dict[str, Any]) -> dict[str, Any]:
         if alt_text:
             payload["caption"] = _to_rich_text(alt_text)
         return {"object": "block", "type": "image", "image": payload}
-    if alt_text and url:
-        display = f"{alt_text} ({url})"
-    else:
-        display = alt_text or url
+    if _looks_like_local_image_path(url):
+        return {
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": _LOCAL_UPLOAD_SENTINEL,
+                _LOCAL_UPLOAD_SENTINEL: {"path": url, "alt": alt_text},
+            },
+        }
     return {
         "object": "block",
         "type": "paragraph",
-        "paragraph": {"rich_text": _to_rich_text(display)},
+        "paragraph": {"rich_text": _to_rich_text(_image_fallback_text(alt_text, url))},
     }
 
 
@@ -1148,9 +1214,14 @@ class NotionClient:
         summary_markdown: str,
         summary_modified_at: datetime,
         include_audio: Path | None,
+        image_base_dir: Path | None = None,
+        upload_images: bool = False,
     ) -> NotionPaper:
         await self._ensure_property_keys()
         blocks = _markdown_to_blocks(summary_markdown)
+        await self._resolve_image_uploads(
+            blocks, image_base_dir=image_base_dir, enabled=upload_images
+        )
         payload = {
             "parent": {"database_id": self.database_id},
             "properties": self._build_properties(
@@ -1185,6 +1256,8 @@ class NotionClient:
         summary_modified_at: datetime,
         include_audio: Path | None,
         archived: bool,
+        image_base_dir: Path | None = None,
+        upload_images: bool = False,
     ) -> NotionPaper:
         await self._ensure_property_keys()
         payload = {
@@ -1206,6 +1279,9 @@ class NotionClient:
         await self._request("PATCH", f"/pages/{page_id}", json_payload=payload)
 
         blocks = _markdown_to_blocks(summary_markdown)
+        await self._resolve_image_uploads(
+            blocks, image_base_dir=image_base_dir, enabled=upload_images
+        )
         await self.replace_page_body(page_id, blocks)
 
         markdown = await self.fetch_page_markdown(page_id)
@@ -1314,10 +1390,12 @@ class NotionClient:
         }
         await self.append_blocks(page_id, [block])
 
-    async def _upload_file(self, file_path: Path) -> str:
+    async def _upload_file(
+        self, file_path: Path, *, content_type: str = "audio/mpeg"
+    ) -> str:
         create_payload = {
             "filename": file_path.name,
-            "content_type": "audio/mpeg",
+            "content_type": content_type,
             "mode": "single_part",
         }
         created = await self._request(
@@ -1339,7 +1417,7 @@ class NotionClient:
                         "Authorization": f"Bearer {self.token}",
                         "Notion-Version": self.notion_version,
                     },
-                    files={"file": (file_path.name, fp, "audio/mpeg")},
+                    files={"file": (file_path.name, fp, content_type)},
                 )
         try:
             resp.raise_for_status()
@@ -1360,6 +1438,90 @@ class NotionClient:
             ) from exc
 
         return upload_id
+
+    async def _resolve_image_uploads(
+        self,
+        blocks: list[dict[str, Any]],
+        *,
+        image_base_dir: Path | None,
+        enabled: bool,
+    ) -> None:
+        """Replace local-image placeholder blocks in place.
+
+        Each placeholder either becomes a Notion-hosted ``file_upload`` image
+        block (file uploaded once, deduplicated by resolved path) or, if upload
+        is disabled / the file is missing / the upload fails, degrades to a
+        paragraph surfacing the alt text and path. Never raises: image work
+        must not abort an otherwise-valid Notion sync (invariants 7, 8).
+        Recurses into container-block children so nested images are covered.
+        """
+        cache: dict[Path, str] = {}
+        base = Path(image_base_dir).resolve() if image_base_dir else None
+
+        async def visit(block_list: list[dict[str, Any]]) -> None:
+            for block in block_list:
+                btype = block.get("type")
+                image = block.get("image")
+                if (
+                    btype == "image"
+                    and isinstance(image, dict)
+                    and image.get("type") == _LOCAL_UPLOAD_SENTINEL
+                ):
+                    spec = image.get(_LOCAL_UPLOAD_SENTINEL) or {}
+                    await self._materialize_local_image(
+                        block, spec, base=base, enabled=enabled, cache=cache
+                    )
+                    continue  # image blocks carry no children
+                if isinstance(btype, str):
+                    payload = block.get(btype)
+                    if isinstance(payload, dict):
+                        children = payload.get("children")
+                        if isinstance(children, list) and children:
+                            await visit(children)
+
+        await visit(blocks)
+
+    async def _materialize_local_image(
+        self,
+        block: dict[str, Any],
+        spec: dict[str, Any],
+        *,
+        base: Path | None,
+        enabled: bool,
+        cache: dict[Path, str],
+    ) -> None:
+        path_str = str(spec.get("path", "") or "")
+        alt_text = str(spec.get("alt", "") or "")
+        fallback = _image_fallback_text(alt_text, path_str)
+
+        if not enabled or base is None or not path_str:
+            _set_paragraph_block(block, fallback)
+            return
+
+        try:
+            resolved = (base / path_str.lstrip("/")).resolve()
+            within_base = resolved == base or base in resolved.parents
+            if (
+                not within_base
+                or not resolved.is_file()
+                or resolved.suffix.lower().lstrip(".") not in _UPLOAD_IMAGE_EXTS
+                or resolved.stat().st_size > _MAX_UPLOAD_BYTES
+            ):
+                _set_paragraph_block(block, fallback)
+                return
+
+            upload_id = cache.get(resolved)
+            if upload_id is None:
+                content_type = (
+                    mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+                )
+                upload_id = await self._upload_file(
+                    resolved, content_type=content_type
+                )
+                cache[resolved] = upload_id
+            _set_uploaded_image_block(block, upload_id, alt_text)
+        except Exception:
+            _set_paragraph_block(block, fallback)
 
 
 def _should_archive(paper: Paper) -> bool:
@@ -1413,6 +1575,8 @@ async def _push_local_to_notion(
             summary_markdown=summary_markdown,
             summary_modified_at=summary_modified_at,
             include_audio=audio_path,
+            image_base_dir=config.data_dir,
+            upload_images=config.notion_upload_images,
         )
         report.notion_created += 1
     else:
@@ -1423,6 +1587,8 @@ async def _push_local_to_notion(
             summary_modified_at=summary_modified_at,
             include_audio=audio_path,
             archived=archived,
+            image_base_dir=config.data_dir,
+            upload_images=config.notion_upload_images,
         )
         report.notion_updated += 1
 

@@ -27,6 +27,9 @@ def create_app(config: Config) -> FastAPI:
     config.ensure_dirs()
     app.mount("/audio", StaticFiles(directory=str(config.audio_dir)), name="audio")
 
+    # Mount figure images extracted from papers (referenced as /images/... in summaries)
+    app.mount("/images", StaticFiles(directory=str(config.images_dir)), name="images")
+
     # Set up templates
     templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
