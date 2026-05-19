@@ -114,10 +114,11 @@ For user-facing setup and usage, see [README.md](README.md).
    The upload path is gated by `config.notion_upload_images` (default `True`,
    env `PAPER_ASSIST_NOTION_UPLOAD_IMAGES`). Disabled, missing file, oversize
    (>20 MiB), out-of-base path, or upload failure all degrade to the paragraph
-   fallback — image work must never abort a valid sync (invariants 7, 8). This
-   needs no Notion-Version bump: the existing pinned `2022-06-28` already serves
-   `file_uploads` (proven by `attach_audio`). Notion returns uploaded images
-   back as `file`-type blocks, so the existing read path round-trips them.
+   fallback — image work must never abort a valid sync (invariants 7, 8).
+   `file_uploads` is served under the pinned `NOTION_VERSION` (see invariant 8d);
+   Notion returns uploaded images back as `file`-type blocks, so the existing
+   read path round-trips them (the round-trip rewrites local `/images/...`
+   refs to short-lived presigned URLs on pull — see `docs/roadmap.md`).
 
 5b. **Browser Reader Mode was removed.** (2026-04-17, roadmap 2d.)
    The client-side Web Speech feature was dropped because it drifted out of sync
@@ -164,6 +165,18 @@ For user-facing setup and usage, see [README.md](README.md).
 8c. **Notion block writes must respect the API's nested-child depth limit.**
    Create/update paths should append deeper descendants recursively after shallower parent blocks exist.
 
+8d. **`NOTION_VERSION` is pinned to `2025-09-03` (data sources).**
+   That version is **not** backwards-compatible: databases own data sources, so
+   schema/query/page-parent move off `database_id`. All database-level calls go
+   through `NotionClient._ensure_data_source_id()` (cached per client; resolves
+   `data_sources[0].id` from `GET /databases/{id}`). Schema reads use
+   `GET /data_sources/{ds}`, listing uses `POST /data_sources/{ds}/query`, and
+   `create_page` parents pages with `{"type": "data_source_id",
+   "data_source_id": ...}`. Single-data-source databases only (multi-source is a
+   non-goal). Page/block/`file_uploads` endpoints are unchanged by the version.
+   Never reintroduce a raw `GET /databases/{id}` schema read or a
+   `{database_id}` page parent — both 400 under this version.
+
 ## Skill Workflow Gotchas
 
 - `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose, and should run the prompt's redundancy pass before import (no repeated method definitions; headline metrics appear only where they add value).
@@ -209,6 +222,7 @@ If touching Notion sync paths, verify:
 - Math in table cells: `_escape_math_pipes_in_tables` and `_normalise_display_math` handle `|` and `$$` inside table rows; both skip fenced code blocks
 - Mermaid code blocks are stored as Notion code blocks with language `"mermaid"` (Notion may not render as diagrams via API)
 - local figure images (`/images/<paper_id>/*.png`) upload once (deduped by resolved path) to a Notion `file_upload` image block; disabled/missing/oversize/out-of-base/upload-failure each degrade to the paragraph fallback without aborting the sync; recursion covers images nested in list children
+- data-source resolution (invariant 8d): `_ensure_data_source_id` resolves+caches `data_sources[0].id`; schema/query/page-parent use `data_source_id`, not `database_id`; missing data sources raises a clear error
 
 ## Testing
 
@@ -221,7 +235,7 @@ Target files:
 - `tests/test_summarizer.py` — section parsing + `normalize_summary_body`
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
-- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion)
+- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 - `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)

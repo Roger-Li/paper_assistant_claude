@@ -26,3 +26,7 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local-only artifacts (agent worktrees are registered git
+# worktrees; committing them would create a broken embedded gitlink)
+.claude/worktrees/

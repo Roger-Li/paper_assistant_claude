@@ -194,6 +194,9 @@ class RecordingNotionWriteClient(NotionClient):
             "source_type": "source_type",
             "source_url": "source_url",
         }
+        # Pre-resolved so create_page's _ensure_data_source_id() short-circuits
+        # without an HTTP round-trip (Notion API 2025-09-03 data sources).
+        self._data_source_id = "ds-1"
         self._children_by_parent: dict[str, list[dict[str, object]]] = {}
         self._next_id = 0
 
@@ -1554,3 +1557,127 @@ async def test_resolve_recurses_into_children(tmp_path):
     assert len(client.uploads) == 1
     assert child["type"] == "image"
     assert child["image"]["type"] == "file_upload"
+
+
+# --- Notion API 2025-09-03 data-source migration --------------------------
+
+_FULL_SCHEMA = {
+    "properties": {
+        "arxiv_id": {"type": "rich_text"},
+        "title": {"type": "title"},
+        "authors": {"type": "rich_text"},
+        "tags": {"type": "multi_select"},
+        "reading_status": {"type": "select"},
+        "summary_last_modified": {"type": "date"},
+        "local_last_modified": {"type": "date"},
+        "archived": {"type": "checkbox"},
+        "source_slug": {"type": "rich_text"},
+        "source_type": {"type": "select"},
+        "source_url": {"type": "rich_text"},
+    }
+}
+
+
+class _DataSourceRequestStub(NotionClient):
+    """NotionClient recording _request calls with canned 2025-09-03 responses."""
+
+    def __init__(self, *, data_sources=None) -> None:
+        super().__init__("token", "db")
+        self.calls: list[tuple[str, str]] = []
+        self._data_sources = (
+            [{"id": "ds-xyz", "name": "Papers"}]
+            if data_sources is None
+            else data_sources
+        )
+
+    async def _request(
+        self, method, path, *, json_payload=None, params=None, timeout=60.0
+    ):
+        self.calls.append((method, path))
+        if method == "GET" and path == "/databases/db":
+            return {"data_sources": self._data_sources}
+        if method == "GET" and path == "/data_sources/ds-xyz":
+            return dict(_FULL_SCHEMA)
+        if method == "POST" and path == "/data_sources/ds-xyz/query":
+            return {"results": [], "has_more": False}
+        raise AssertionError(f"Unexpected request {method} {path}")
+
+
+@pytest.mark.asyncio
+async def test_ensure_data_source_id_resolves_and_caches():
+    client = _DataSourceRequestStub()
+
+    first = await client._ensure_data_source_id()
+    second = await client._ensure_data_source_id()
+
+    assert first == second == "ds-xyz"
+    # Resolved exactly once; the second call is served from cache.
+    assert client.calls == [("GET", "/databases/db")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_data_source_id_raises_without_sources():
+    client = _DataSourceRequestStub(data_sources=[])
+
+    with pytest.raises(ValueError, match="no data sources"):
+        await client._ensure_data_source_id()
+
+
+@pytest.mark.asyncio
+async def test_ensure_property_keys_reads_data_source_schema():
+    client = _DataSourceRequestStub()
+
+    keys = await client._ensure_property_keys()
+
+    assert keys["title"] == "title"
+    assert keys["arxiv_id"] == "arxiv_id"
+    # Schema comes from the data source, not GET /databases/{id}.
+    assert ("GET", "/data_sources/ds-xyz") in client.calls
+    assert ("GET", "/databases/db") in client.calls
+
+
+@pytest.mark.asyncio
+async def test_list_papers_queries_data_source_endpoint():
+    client = _DataSourceRequestStub()
+
+    result = await client.list_papers()
+
+    assert result == []
+    assert ("POST", "/data_sources/ds-xyz/query") in client.calls
+    assert not any(p.endswith("/databases/db/query") for _, p in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_create_page_parent_uses_data_source_id():
+    client = RecordingNotionWriteClient()
+    paper = Paper(metadata=_make_metadata())
+    summary_modified_at = datetime.now(timezone.utc)
+    client.fetch_page_markdown = AsyncMock(return_value="# One-Pager\nok")
+    client._parse_page = lambda page, markdown: NotionPaper(
+        page_id=page["id"],
+        arxiv_id=paper.metadata.arxiv_id,
+        source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
+        title=paper.metadata.title,
+        authors=paper.metadata.authors,
+        tags=[],
+        reading_status=ReadingStatus.UNREAD.value,
+        summary_markdown=markdown,
+        summary_last_modified=summary_modified_at,
+        local_last_modified=paper.local_modified_at,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    await client.create_page(
+        paper=paper,
+        summary_markdown="# One-Pager\nok",
+        summary_modified_at=summary_modified_at,
+        include_audio=None,
+    )
+
+    assert client.created_pages[0]["parent"] == {
+        "type": "data_source_id",
+        "data_source_id": "ds-1",
+    }

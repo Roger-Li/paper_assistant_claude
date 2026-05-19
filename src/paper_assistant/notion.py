@@ -27,7 +27,7 @@ from paper_assistant.summarizer import (
 )
 
 NOTION_API_BASE = "https://api.notion.com/v1"
-NOTION_VERSION = "2022-06-28"
+NOTION_VERSION = "2025-09-03"
 
 # Sentinel image-block type used between markdown parsing and the async upload
 # pass: a local/relative figure path that must be uploaded to Notion before it
@@ -905,6 +905,7 @@ class NotionClient:
         self.api_base = api_base.rstrip("/")
         self.notion_version = notion_version
         self._property_keys: dict[str, str] | None = None
+        self._data_source_id: str | None = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -953,12 +954,36 @@ class NotionClient:
             return response.json()
         return {}
 
+    async def _ensure_data_source_id(self) -> str:
+        """Resolve the database's data source id (Notion API 2025-09-03+).
+
+        Under ``Notion-Version: 2025-09-03`` databases own one or more data
+        sources, and the property schema / query / page-parent operations move
+        from ``database_id`` to ``data_source_id``. This app uses a single
+        paper-tracker database, so the first data source is canonical. Cached
+        for the client lifetime alongside ``_property_keys``.
+        """
+        if self._data_source_id is not None:
+            return self._data_source_id
+
+        data = await self._request("GET", f"/databases/{self.database_id}")
+        sources = data.get("data_sources", [])
+        if not sources or not sources[0].get("id"):
+            raise ValueError(
+                "Notion database returned no data sources. Ensure the "
+                f"integration has access to database {self.database_id} and "
+                "that it is shared with the integration."
+            )
+        self._data_source_id = sources[0]["id"]
+        return self._data_source_id
+
     async def _ensure_property_keys(self) -> dict[str, str]:
         """Resolve canonical property names to actual database property keys."""
         if self._property_keys is not None:
             return self._property_keys
 
-        data = await self._request("GET", f"/databases/{self.database_id}")
+        ds_id = await self._ensure_data_source_id()
+        data = await self._request("GET", f"/data_sources/{ds_id}")
         properties = data.get("properties", {})
         types_by_name = {
             name: value.get("type")
@@ -1038,6 +1063,7 @@ class NotionClient:
 
     async def list_papers(self) -> list[NotionPaper]:
         await self._ensure_property_keys()
+        ds_id = await self._ensure_data_source_id()
         pages: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
@@ -1046,7 +1072,7 @@ class NotionClient:
                 payload["start_cursor"] = cursor
             data = await self._request(
                 "POST",
-                f"/databases/{self.database_id}/query",
+                f"/data_sources/{ds_id}/query",
                 json_payload=payload,
             )
             pages.extend(data.get("results", []))
@@ -1218,12 +1244,13 @@ class NotionClient:
         upload_images: bool = False,
     ) -> NotionPaper:
         await self._ensure_property_keys()
+        ds_id = await self._ensure_data_source_id()
         blocks = _markdown_to_blocks(summary_markdown)
         await self._resolve_image_uploads(
             blocks, image_base_dir=image_base_dir, enabled=upload_images
         )
         payload = {
-            "parent": {"database_id": self.database_id},
+            "parent": {"type": "data_source_id", "data_source_id": ds_id},
             "properties": self._build_properties(
                 arxiv_id=paper.metadata.arxiv_id or "",
                 title=paper.metadata.title,
