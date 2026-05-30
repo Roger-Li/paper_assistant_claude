@@ -181,9 +181,45 @@ class TestNormalizeSummaryBody:
         assert cleaned.startswith("# One-Pager")
 
     def test_does_not_strip_late_horizontal_rule(self):
-        # A \n---\n past 400 chars must not be stripped (it's real content).
+        # A fresh body's own \n---\n (no front matter) must never be stripped —
+        # it's a real section rule, regardless of position.
         padding = "Line of prose. " * 40  # > 400 chars
         raw = f"# One-Pager\n{padding}\n---\nTrailing section"
         cleaned = normalize_summary_body(raw)
         assert "Trailing section" in cleaned
         assert "---" in cleaned
+
+    def test_strips_title_header_when_author_line_exceeds_400_chars(self):
+        # Regression: with many authors the metadata header's closing ``---``
+        # rule sits well past 400 chars. It must still be stripped — the old
+        # fixed-window bound left the duplicated title/metadata header in the
+        # narration/edit body for papers like the 25-author Agentic-RL survey.
+        authors = [f"Firstname{i} Lastname{i}" for i in range(30)]
+        authors_line = f"**Authors**: {', '.join(authors)}"
+        assert len(authors_line) > 400  # ensure we exercise the >400 path
+        metadata = PaperMetadata(
+            arxiv_id="2509.02547", title="A Long Survey", authors=authors
+        )
+        body = "# One-Pager\nReal body content."
+        summary = SummarizationResult(full_markdown=body, one_pager=body, sections={})
+        formatted = format_summary_file(metadata, summary)
+
+        cleaned = normalize_summary_body(formatted)
+
+        assert cleaned.lstrip().startswith("# One-Pager")
+        assert "**Authors**" not in cleaned
+        assert "**arXiv**" not in cleaned
+        assert "A Long Survey" not in cleaned  # the header title is gone
+
+    def test_preserves_wrapperless_yaml_body_with_late_divider(self):
+        # YAML front matter but NO generated title/metadata header, plus a real
+        # ``---`` section rule later in the body (e.g. a hand-edited or legacy
+        # file). The divider must NOT be treated as a header terminator — the
+        # earlier content must survive (the strip checks header shape, not just
+        # front-matter presence).
+        intro = "Real intro paragraph. " * 20  # > 400 chars
+        raw = f"---\npaper_id: x\n---\n# Background\n{intro}\n---\n## Methods\nDetails."
+        cleaned = normalize_summary_body(raw)
+        assert "# Background" in cleaned
+        assert "Real intro paragraph." in cleaned
+        assert "## Methods" in cleaned

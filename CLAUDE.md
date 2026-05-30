@@ -220,6 +220,7 @@ If touching Notion sync paths, verify:
 - Math in table cells: `_escape_math_pipes_in_tables` and `_normalise_display_math` handle `|` and `$$` inside table rows; both skip fenced code blocks
 - Mermaid code blocks are stored as Notion code blocks with language `"mermaid"` (Notion may not render as diagrams via API)
 - local figure images (`/images/<paper_id>/*.png`) upload once (deduped by resolved path) to a Notion `file_upload` image block; disabled/missing/oversize/out-of-base/upload-failure each degrade to the paragraph fallback without aborting the sync; recursion covers images nested in list children
+- inline Markdown links degrade gracefully: `_safe_inline_link_url` keeps only absolute `http(s)`/`mailto:` targets; non-resolvable ones (`#` anchors, relative paths) render as plain text so a single bad link never aborts the sync (invariants 7, 8). The shared summary prompt also forbids placeholder/relative links at generation time.
 - data-source resolution (invariant 8d): `_ensure_data_source_id` resolves+caches `data_sources[0].id`; schema/query/page-parent use `data_source_id`, not `database_id`; missing data sources raises a clear error
 
 ## Testing
@@ -230,10 +231,10 @@ pytest tests/
 
 Target files:
 - `tests/test_storage.py` — index/path invariants (including transcript round-trip + cleanup)
-- `tests/test_summarizer.py` — section parsing + `normalize_summary_body`
+- `tests/test_summarizer.py` — section parsing + `normalize_summary_body` (header strip gated on the generated wrapper's *shape* via `_looks_like_generated_header`: strips long many-author headers, but preserves wrapper-less YAML bodies whose real `---` section rules come later)
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
-- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
+- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + inline link sanitization (`_safe_inline_link_url`: anchor/relative→plain text, mailto/http preserved) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 - `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)

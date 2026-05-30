@@ -319,7 +319,9 @@ def _inline_to_rich_text(
                 rt["text"]["link"] = {"url": link_url}
             items.append(rt)
         elif ntype == "link":
-            url = node.get("attrs", {}).get("url", "")
+            # Drop non-resolvable targets (e.g. ``#`` anchors, relative paths)
+            # so the link degrades to plain text instead of 400-ing the sync.
+            url = _safe_inline_link_url(node.get("attrs", {}).get("url", ""))
             items.extend(
                 _inline_to_rich_text(node.get("children", []), annotations, url)
             )
@@ -329,11 +331,12 @@ def _inline_to_rich_text(
         elif ntype == "softbreak":
             items.append({"type": "text", "text": {"content": "\n"}})
         elif ntype == "image":
-            url = node.get("attrs", {}).get("url", "")
-            alt_text = _image_alt_text(node) or url
+            raw_url = node.get("attrs", {}).get("url", "")
+            alt_text = _image_alt_text(node) or raw_url
             rt = {"type": "text", "text": {"content": alt_text}}
-            if url:
-                rt["text"]["link"] = {"url": url}
+            safe_url = _safe_inline_link_url(raw_url)
+            if safe_url:
+                rt["text"]["link"] = {"url": safe_url}
             if annotations:
                 rt["annotations"] = {**annotations}
             items.append(rt)
@@ -387,6 +390,23 @@ def _image_alt_text(node: dict[str, Any]) -> str:
 
 def _is_absolute_http_url(url: str) -> bool:
     return bool(url) and url.lower().startswith(("http://", "https://"))
+
+
+def _safe_inline_link_url(url: str) -> str | None:
+    """Return ``url`` if Notion accepts it as an inline-text link, else ``None``.
+
+    Notion rejects rich_text links whose target is not a resolvable URL — a bare
+    ``#`` anchor, a relative path, and similar — with a 400 that aborts the whole
+    page sync. Dropping the link so the text still renders keeps a single bad
+    link from sinking an otherwise valid sync, mirroring the image-block
+    fallback (invariants 7, 8). Absolute http(s) and ``mailto:`` targets pass.
+    """
+    if not url:
+        return None
+    candidate = url.strip()
+    if _is_absolute_http_url(candidate) or candidate.lower().startswith("mailto:"):
+        return candidate
+    return None
 
 
 def _looks_like_local_image_path(url: str) -> bool:

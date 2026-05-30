@@ -703,6 +703,47 @@ class TestMarkdownToBlocks:
         assert link_items[0]["text"]["link"]["url"] == "https://example.com"
         assert link_items[0]["text"]["content"] == "click"
 
+    def test_anchor_link_falls_back_to_plain_text(self):
+        # A bare ``#`` anchor is not a valid Notion link target; it must degrade
+        # to plain text rather than 400 the whole sync (invariants 7, 8).
+        blocks = _markdown_to_blocks("see [the survey](#) now")
+        rt = _rich_text(blocks[0])
+        assert all(not r.get("text", {}).get("link") for r in rt)
+        text = "".join(r.get("text", {}).get("content", "") for r in rt)
+        assert text == "see the survey now"
+
+    def test_relative_link_falls_back_to_plain_text(self):
+        blocks = _markdown_to_blocks("[local notes](../notes/x.md)")
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        assert any(r.get("text", {}).get("content") == "local notes" for r in rt)
+
+    def test_bad_link_drops_link_but_keeps_inner_annotations(self):
+        # Annotations inside an invalid link must survive even though the link
+        # itself is dropped (e.g. a bold in-library cross-reference).
+        blocks = _markdown_to_blocks("[**DeepSeek-V3.2**](#)")
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        bold_items = [r for r in rt if r.get("annotations", {}).get("bold")]
+        assert bold_items and bold_items[0]["text"]["content"] == "DeepSeek-V3.2"
+
+    def test_mailto_link_preserved(self):
+        blocks = _markdown_to_blocks("[mail me](mailto:a@b.com)")
+        rt = _rich_text(blocks[0])
+        link_items = [r for r in rt if r.get("text", {}).get("link")]
+        assert len(link_items) == 1
+        assert link_items[0]["text"]["link"]["url"] == "mailto:a@b.com"
+
+    def test_inline_relative_image_drops_link_keeps_alt_text(self):
+        # An inline (in-prose) image with a relative path must not emit a raw
+        # relative link to Notion; the alt text still renders.
+        blocks = _markdown_to_blocks("Look at ![fig](/images/p/a.png) closely.")
+        assert blocks[0]["type"] == "paragraph"
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        text = "".join(r.get("text", {}).get("content", "") for r in rt)
+        assert "fig" in text
+
     def test_inline_math(self):
         blocks = _markdown_to_blocks("Energy is $E=mc^2$ here")
         rt = _rich_text(blocks[0])
