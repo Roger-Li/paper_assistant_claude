@@ -85,6 +85,7 @@ Configuration resolution order is:
 | `PAPER_ASSIST_NOTION_TOKEN` | No* | none | Notion integration token (*required when sync is enabled). |
 | `PAPER_ASSIST_NOTION_DATABASE_ID` | No* | none | Target Notion database ID (*required when sync is enabled). |
 | `PAPER_ASSIST_NOTION_ARCHIVE_ON_DELETE` | No | `true` | Archive linked Notion pages when local side is archived. |
+| `PAPER_ASSIST_NOTION_UPLOAD_IMAGES` | No | `true` | Upload local figure images (`/images/<id>/*.png`) to Notion as native image blocks during sync. When `false`, such figures degrade to a text paragraph in Notion. |
 
 ## Data Directory Layout
 
@@ -154,6 +155,14 @@ summary. Images are linked directly from `arxiv.org/html/...`, render in the
 web UI and Notion, and are stripped from the audio narration. If no matching
 HF image link is available, the summary keeps the prose description and skips
 the image instead of guessing.
+
+For papers with **no arXiv HTML render** (PDF-only sources), figures can instead
+be saved locally under `<data_dir>/images/<paper_id>/` and referenced in the
+summary as `![Figure N: caption](/images/<paper_id>/figN.png)`. The web UI
+serves these from the `/images` mount, and Notion sync uploads each file once
+as a native Notion-hosted image block (toggle with
+`PAPER_ASSIST_NOTION_UPLOAD_IMAGES`; falls back to a text paragraph if disabled
+or the file is missing). The audio narration still strips image markdown.
 
 ### 2. Import your own summary
 

@@ -15,6 +15,8 @@ from paper_assistant.notion import (
     NotionClient,
     NotionPaper,
     sync_notion,
+    _LOCAL_UPLOAD_SENTINEL,
+    _looks_like_local_image_path,
     _markdown_to_blocks,
     _blocks_to_markdown,
     _normalize_code_language,
@@ -103,7 +105,16 @@ class FakeNotionClient:
     async def list_papers(self) -> list[NotionPaper]:
         return list(self.remote_papers)
 
-    async def create_page(self, *, paper, summary_markdown, summary_modified_at, include_audio):
+    async def create_page(
+        self,
+        *,
+        paper,
+        summary_markdown,
+        summary_modified_at,
+        include_audio,
+        image_base_dir=None,
+        upload_images=False,
+    ):
         pid = paper.metadata.paper_id
         self.created_calls.append(pid)
         created = NotionPaper(
@@ -134,6 +145,8 @@ class FakeNotionClient:
         summary_modified_at,
         include_audio,
         archived,
+        image_base_dir=None,
+        upload_images=False,
     ):
         self.updated_calls.append(page_id)
         return NotionPaper(
@@ -181,6 +194,9 @@ class RecordingNotionWriteClient(NotionClient):
             "source_type": "source_type",
             "source_url": "source_url",
         }
+        # Pre-resolved so create_page's _ensure_data_source_id() short-circuits
+        # without an HTTP round-trip (Notion API 2025-09-03 data sources).
+        self._data_source_id = "ds-1"
         self._children_by_parent: dict[str, list[dict[str, object]]] = {}
         self._next_id = 0
 
@@ -687,6 +703,47 @@ class TestMarkdownToBlocks:
         assert link_items[0]["text"]["link"]["url"] == "https://example.com"
         assert link_items[0]["text"]["content"] == "click"
 
+    def test_anchor_link_falls_back_to_plain_text(self):
+        # A bare ``#`` anchor is not a valid Notion link target; it must degrade
+        # to plain text rather than 400 the whole sync (invariants 7, 8).
+        blocks = _markdown_to_blocks("see [the survey](#) now")
+        rt = _rich_text(blocks[0])
+        assert all(not r.get("text", {}).get("link") for r in rt)
+        text = "".join(r.get("text", {}).get("content", "") for r in rt)
+        assert text == "see the survey now"
+
+    def test_relative_link_falls_back_to_plain_text(self):
+        blocks = _markdown_to_blocks("[local notes](../notes/x.md)")
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        assert any(r.get("text", {}).get("content") == "local notes" for r in rt)
+
+    def test_bad_link_drops_link_but_keeps_inner_annotations(self):
+        # Annotations inside an invalid link must survive even though the link
+        # itself is dropped (e.g. a bold in-library cross-reference).
+        blocks = _markdown_to_blocks("[**DeepSeek-V3.2**](#)")
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        bold_items = [r for r in rt if r.get("annotations", {}).get("bold")]
+        assert bold_items and bold_items[0]["text"]["content"] == "DeepSeek-V3.2"
+
+    def test_mailto_link_preserved(self):
+        blocks = _markdown_to_blocks("[mail me](mailto:a@b.com)")
+        rt = _rich_text(blocks[0])
+        link_items = [r for r in rt if r.get("text", {}).get("link")]
+        assert len(link_items) == 1
+        assert link_items[0]["text"]["link"]["url"] == "mailto:a@b.com"
+
+    def test_inline_relative_image_drops_link_keeps_alt_text(self):
+        # An inline (in-prose) image with a relative path must not emit a raw
+        # relative link to Notion; the alt text still renders.
+        blocks = _markdown_to_blocks("Look at ![fig](/images/p/a.png) closely.")
+        assert blocks[0]["type"] == "paragraph"
+        rt = _rich_text(blocks[0])
+        assert [r for r in rt if r.get("text", {}).get("link")] == []
+        text = "".join(r.get("text", {}).get("content", "") for r in rt)
+        assert "fig" in text
+
     def test_inline_math(self):
         blocks = _markdown_to_blocks("Energy is $E=mc^2$ here")
         rt = _rich_text(blocks[0])
@@ -898,19 +955,19 @@ class TestMarkdownToBlocks:
         assert link_items, "expected the inline image to render as a link"
         assert link_items[0]["text"]["link"]["url"] == "https://arxiv.org/html/x/x1.png"
 
-    def test_relative_image_url_falls_back_to_paragraph(self):
-        # Notion's external image source rejects non-http URLs, so a
-        # relative path like figures/arch.png must not become an image
-        # block (which would abort the sync).
-        md = "![diagram](figures/arch.png)"
+    def test_relative_image_url_becomes_upload_placeholder(self):
+        # A local/relative image path is parsed into a placeholder image
+        # block, resolved later by NotionClient._resolve_image_uploads. It
+        # must never reach the Notion API as a raw non-http image block.
+        md = "![diagram](/images/2605.13779/arch.png)"
         blocks = _markdown_to_blocks(md)
         image_blocks = _find_block(blocks, "image")
-        assert not image_blocks
-        assert blocks[0]["type"] == "paragraph"
-        rt = _rich_text(blocks[0])
-        content = "".join(r.get("text", {}).get("content", "") for r in rt)
-        assert "diagram" in content
-        assert "figures/arch.png" in content
+        assert len(image_blocks) == 1
+        payload = image_blocks[0]["image"]
+        assert payload["type"] == _LOCAL_UPLOAD_SENTINEL
+        spec = payload[_LOCAL_UPLOAD_SENTINEL]
+        assert spec["path"] == "/images/2605.13779/arch.png"
+        assert spec["alt"] == "diagram"
 
     def test_data_uri_image_falls_back_to_paragraph(self):
         md = "![inline](data:image/png;base64,AAAA)"
@@ -1374,3 +1431,294 @@ class TestBlocksToMarkdownRichFormatting:
         assert blocks[0]["type"] == "image"
         result = _blocks_to_markdown(blocks)
         assert original in result
+
+
+# ---------------------------------------------------------------------------
+# Local figure image upload to Notion (file_upload blocks)
+# ---------------------------------------------------------------------------
+
+
+class TestLooksLikeLocalImagePath:
+    def test_local_paths_are_images(self):
+        assert _looks_like_local_image_path("/images/2605.13779/fig1.png")
+        assert _looks_like_local_image_path("figures/arch.JPG")
+        assert _looks_like_local_image_path("a/b/c.jpeg")
+        assert _looks_like_local_image_path("plot.webp?v=2#frag")
+
+    def test_remote_and_non_image_paths_excluded(self):
+        assert not _looks_like_local_image_path("https://arxiv.org/html/x/x1.png")
+        assert not _looks_like_local_image_path("http://example.com/a.png")
+        assert not _looks_like_local_image_path("data:image/png;base64,AAAA")
+        assert not _looks_like_local_image_path("mailto:a@b.com")
+        assert not _looks_like_local_image_path("notes.txt")
+        assert not _looks_like_local_image_path("/images/no-extension")
+        assert not _looks_like_local_image_path("")
+
+
+class _StubUploadClient(NotionClient):
+    """NotionClient whose _upload_file records calls instead of hitting the API."""
+
+    def __init__(self) -> None:
+        super().__init__("token", "db")
+        self.uploads: list[tuple[Path, str]] = []
+        self.fail = False
+
+    async def _upload_file(self, file_path, *, content_type="audio/mpeg"):
+        if self.fail:
+            raise RuntimeError("simulated upload failure")
+        self.uploads.append((Path(file_path), content_type))
+        return f"upload-{len(self.uploads)}"
+
+
+def _placeholder_block(path: str, alt: str) -> dict:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": _LOCAL_UPLOAD_SENTINEL,
+            _LOCAL_UPLOAD_SENTINEL: {"path": path, "alt": alt},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolve_uploads_local_image_to_file_upload_block(tmp_path):
+    img_dir = tmp_path / "images" / "2605.13779"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig1.png").write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes")
+    blocks = _markdown_to_blocks("![Figure 1: overview](/images/2605.13779/fig1.png)")
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(
+        blocks, image_base_dir=tmp_path, enabled=True
+    )
+
+    assert len(client.uploads) == 1
+    assert client.uploads[0][1] == "image/png"
+    payload = blocks[0]["image"]
+    assert blocks[0]["type"] == "image"
+    assert payload["type"] == "file_upload"
+    assert payload["file_upload"]["id"] == "upload-1"
+    assert payload["caption"][0]["text"]["content"] == "Figure 1: overview"
+
+
+@pytest.mark.asyncio
+async def test_resolve_dedupes_repeated_paths(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [
+        _placeholder_block("/images/f.png", "A"),
+        _placeholder_block("/images/f.png", "B"),
+    ]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert len(client.uploads) == 1  # uploaded once, reused
+    assert blocks[0]["image"]["file_upload"]["id"] == "upload-1"
+    assert blocks[1]["image"]["file_upload"]["id"] == "upload-1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing_file_falls_back_to_paragraph(tmp_path):
+    blocks = [_placeholder_block("/images/missing.png", "diagram")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert not client.uploads
+    assert blocks[0]["type"] == "paragraph"
+    content = "".join(
+        r.get("text", {}).get("content", "")
+        for r in blocks[0]["paragraph"]["rich_text"]
+    )
+    assert "diagram" in content and "/images/missing.png" in content
+
+
+@pytest.mark.asyncio
+async def test_resolve_disabled_degrades_without_upload(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [_placeholder_block("/images/f.png", "diagram")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=False)
+
+    assert not client.uploads
+    assert blocks[0]["type"] == "paragraph"
+
+
+@pytest.mark.asyncio
+async def test_resolve_upload_failure_degrades_to_paragraph(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "f.png").write_bytes(b"x")
+    blocks = [_placeholder_block("/images/f.png", "diagram")]
+    client = _StubUploadClient()
+    client.fail = True
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert blocks[0]["type"] == "paragraph"  # never raises; degrades
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_path_traversal(tmp_path):
+    base = tmp_path / "data"
+    base.mkdir()
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"x")
+    blocks = [_placeholder_block("/../secret.png", "x")]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=base, enabled=True)
+
+    assert not client.uploads  # escaped base -> not uploaded
+    assert blocks[0]["type"] == "paragraph"
+
+
+@pytest.mark.asyncio
+async def test_resolve_recurses_into_children(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "c.png").write_bytes(b"x")
+    blocks = [
+        {
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {
+                "rich_text": [],
+                "children": [_placeholder_block("/images/c.png", "nested")],
+            },
+        }
+    ]
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    child = blocks[0]["bulleted_list_item"]["children"][0]
+    assert len(client.uploads) == 1
+    assert child["type"] == "image"
+    assert child["image"]["type"] == "file_upload"
+
+
+# --- Notion API 2025-09-03 data-source migration --------------------------
+
+_FULL_SCHEMA = {
+    "properties": {
+        "arxiv_id": {"type": "rich_text"},
+        "title": {"type": "title"},
+        "authors": {"type": "rich_text"},
+        "tags": {"type": "multi_select"},
+        "reading_status": {"type": "select"},
+        "summary_last_modified": {"type": "date"},
+        "local_last_modified": {"type": "date"},
+        "archived": {"type": "checkbox"},
+        "source_slug": {"type": "rich_text"},
+        "source_type": {"type": "select"},
+        "source_url": {"type": "rich_text"},
+    }
+}
+
+
+class _DataSourceRequestStub(NotionClient):
+    """NotionClient recording _request calls with canned 2025-09-03 responses."""
+
+    def __init__(self, *, data_sources=None) -> None:
+        super().__init__("token", "db")
+        self.calls: list[tuple[str, str]] = []
+        self._data_sources = (
+            [{"id": "ds-xyz", "name": "Papers"}]
+            if data_sources is None
+            else data_sources
+        )
+
+    async def _request(
+        self, method, path, *, json_payload=None, params=None, timeout=60.0
+    ):
+        self.calls.append((method, path))
+        if method == "GET" and path == "/databases/db":
+            return {"data_sources": self._data_sources}
+        if method == "GET" and path == "/data_sources/ds-xyz":
+            return dict(_FULL_SCHEMA)
+        if method == "POST" and path == "/data_sources/ds-xyz/query":
+            return {"results": [], "has_more": False}
+        raise AssertionError(f"Unexpected request {method} {path}")
+
+
+@pytest.mark.asyncio
+async def test_ensure_data_source_id_resolves_and_caches():
+    client = _DataSourceRequestStub()
+
+    first = await client._ensure_data_source_id()
+    second = await client._ensure_data_source_id()
+
+    assert first == second == "ds-xyz"
+    # Resolved exactly once; the second call is served from cache.
+    assert client.calls == [("GET", "/databases/db")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_data_source_id_raises_without_sources():
+    client = _DataSourceRequestStub(data_sources=[])
+
+    with pytest.raises(ValueError, match="no data sources"):
+        await client._ensure_data_source_id()
+
+
+@pytest.mark.asyncio
+async def test_ensure_property_keys_reads_data_source_schema():
+    client = _DataSourceRequestStub()
+
+    keys = await client._ensure_property_keys()
+
+    assert keys["title"] == "title"
+    assert keys["arxiv_id"] == "arxiv_id"
+    # Schema comes from the data source, not GET /databases/{id}.
+    assert ("GET", "/data_sources/ds-xyz") in client.calls
+    assert ("GET", "/databases/db") in client.calls
+
+
+@pytest.mark.asyncio
+async def test_list_papers_queries_data_source_endpoint():
+    client = _DataSourceRequestStub()
+
+    result = await client.list_papers()
+
+    assert result == []
+    assert ("POST", "/data_sources/ds-xyz/query") in client.calls
+    assert not any(p.endswith("/databases/db/query") for _, p in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_create_page_parent_uses_data_source_id():
+    client = RecordingNotionWriteClient()
+    paper = Paper(metadata=_make_metadata())
+    summary_modified_at = datetime.now(timezone.utc)
+    client.fetch_page_markdown = AsyncMock(return_value="# One-Pager\nok")
+    client._parse_page = lambda page, markdown: NotionPaper(
+        page_id=page["id"],
+        arxiv_id=paper.metadata.arxiv_id,
+        source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
+        title=paper.metadata.title,
+        authors=paper.metadata.authors,
+        tags=[],
+        reading_status=ReadingStatus.UNREAD.value,
+        summary_markdown=markdown,
+        summary_last_modified=summary_modified_at,
+        local_last_modified=paper.local_modified_at,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    await client.create_page(
+        paper=paper,
+        summary_markdown="# One-Pager\nok",
+        summary_modified_at=summary_modified_at,
+        include_audio=None,
+    )
+
+    assert client.created_pages[0]["parent"] == {
+        "type": "data_source_id",
+        "data_source_id": "ds-1",
+    }

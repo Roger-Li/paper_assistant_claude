@@ -212,6 +212,13 @@ Tailored explainer based on user profile / paper type:
   `## My-Level Adaptation`, `## Reading List`, `## Follow-ups`.
   Sub-sections within these use `###`, `####`, etc.
 - Do not hard-wrap ordinary prose paragraphs; use normal Markdown paragraphs.
+- **Links must be resolvable.** Only put absolute `http(s)://` (or `mailto:`)
+  URLs inside Markdown links. Never emit placeholder/anchor links like
+  `[text](#)` or relative paths (`[text](../notes.md)`, `[text](/images/x)`):
+  when the saved summary syncs to Notion these are rejected by the API and can
+  abort the whole sync. For a cross-reference you have no public URL for (e.g.
+  another paper already in the user's library), render the title in **bold**,
+  never as a link.
 - In the **first response**, always deliver **(1)–(5)**.
 - If length is tight, compress verbosity but **never omit**: citations,
   limitations, failure cases, or reviewer skepticism.

@@ -178,6 +178,22 @@ async def summarize_article_text(
     )
 
 
+def _looks_like_generated_header(chunk: str) -> bool:
+    """True if ``chunk`` matches the title/metadata header that
+    ``format_summary_file`` writes before its ``---`` rule.
+
+    That header is a single ``# `` title line followed only by ``**...**``
+    metadata lines (``**arXiv**``/``**Source**``/``**Authors**``) and blanks.
+    Real content — prose, ``##`` section headings, lists — fails this check, so
+    a genuine ``---`` section rule in the body is never mistaken for the wrapper
+    terminator (which would silently drop everything before it).
+    """
+    non_blank = [line for line in chunk.splitlines() if line.strip()]
+    if not non_blank or not non_blank[0].startswith("# "):
+        return False
+    return all(line.startswith("**") for line in non_blank[1:])
+
+
 def normalize_summary_body(raw: str) -> str:
     """Strip YAML front matter and the duplicated title/metadata header.
 
@@ -186,14 +202,24 @@ def normalize_summary_body(raw: str) -> str:
     ``format_summary_file``; this helper returns the editable/narration body.
     """
     body = raw
+    had_front_matter = False
     if body.startswith("---"):
         end_idx = body.find("---", 3)
         if end_idx != -1:
             body = body[end_idx + 3 :].lstrip()
+            had_front_matter = True
 
-    hr_idx = body.find("\n---\n")
-    if hr_idx != -1 and hr_idx < 400:
-        body = body[hr_idx + 5 :].lstrip()
+    # Strip the generated title/metadata header (closed by a ``---`` rule) only
+    # when (a) we actually consumed front matter and (b) the text before the
+    # first ``---`` has the header's shape. Verifying the shape — instead of
+    # stripping at any divider after front matter — stops a real ``---`` section
+    # rule in a wrapper-less body (e.g. hand-edited/legacy YAML) from truncating
+    # the content. No character bound: many-author headers run far past any
+    # fixed window.
+    if had_front_matter:
+        hr_idx = body.find("\n---\n")
+        if hr_idx != -1 and _looks_like_generated_header(body[:hr_idx]):
+            body = body[hr_idx + 5 :].lstrip()
 
     return body
 

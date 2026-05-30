@@ -40,6 +40,7 @@ class Config(BaseModel):
     notion_token: str | None = None
     notion_database_id: str | None = None
     notion_archive_on_delete: bool = True
+    notion_upload_images: bool = True
     qmd_enabled: bool = False
     qmd_command: list[str] = ["qmd"]
     qmd_index_name: str = "paper-assistant"
@@ -78,6 +79,12 @@ class Config(BaseModel):
         return self.data_dir / "pdfs"
 
     @property
+    def images_dir(self) -> Path:
+        """Figure images extracted from papers, served by the web UI at /images
+        and uploaded to Notion as native file-upload image blocks."""
+        return self.data_dir / "images"
+
+    @property
     def index_path(self) -> Path:
         return self.data_dir / "index.json"
 
@@ -91,7 +98,13 @@ class Config(BaseModel):
 
     def ensure_dirs(self) -> None:
         """Create all required directories."""
-        for d in [self.papers_dir, self.audio_dir, self.transcripts_dir, self.pdfs_dir]:
+        for d in [
+            self.papers_dir,
+            self.audio_dir,
+            self.transcripts_dir,
+            self.pdfs_dir,
+            self.images_dir,
+        ]:
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -172,6 +185,14 @@ def load_config(**overrides: object) -> Config:
     notion_archive_on_delete = os.getenv("PAPER_ASSIST_NOTION_ARCHIVE_ON_DELETE")
     if notion_archive_on_delete is not None:
         kwargs["notion_archive_on_delete"] = notion_archive_on_delete.lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+    notion_upload_images = os.getenv("PAPER_ASSIST_NOTION_UPLOAD_IMAGES")
+    if notion_upload_images is not None:
+        kwargs["notion_upload_images"] = notion_upload_images.lower() in (
             "true",
             "1",
             "yes",

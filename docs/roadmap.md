@@ -20,6 +20,19 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 12. Synthesis prompt templates (lit review, comparison, study guide) remain TODO for user finalization. (See R2)
 14. Academic paper search MCP server integration — optional, for paper discovery in lit reviews. (See R3)
 15. Evaluate community research skills for adoption/inspiration. (See R7)
+16. Notion image-sync hardening (follow-ups from the local figure-upload feature):
+    - Read-back round-trip rewrites local `![..](/images/<id>/figN.png)` refs
+      into Notion presigned S3 URLs that expire (~1h, `X-Amz-Expires=3600`) when
+      a sync pulls remote→local. The canonical local summary then holds
+      short-lived URLs; a later local edit + push would send dead external
+      image links. Options: preserve locally-originated `/images/` refs on
+      pull, or skip rewriting image URLs whose block was a local upload.
+    - `_request` uses a fixed 60s timeout; page write + multi-image upload can
+      exceed it, raising `httpx.ReadTimeout` *after* the write+uploads land.
+      `str(ReadTimeout())` is empty, so `skill-import` reports
+      `notion_synced: false` with `notion_error: ""` despite success. Raise the
+      timeout on the sync/upload path and surface `repr(exc)`/type when
+      `str(exc)` is empty.
 
 ## Completed
 

@@ -100,8 +100,25 @@ For user-facing setup and usage, see [README.md](README.md).
    Skill-driven imports do not run this helper; the agent embeds the same
    `![Figure N: caption](https://arxiv.org/html/<id>vK/xN.png)` lines per the
    shared `paper_summary_instructions.md` (and per `skills/codex/summarize-paper/SKILL.md`).
-   Image markdown is stripped from TTS input by `_strip_markdown_for_speech` and
-   round-trips into Notion as external image blocks via `_image_node_to_block`.
+   Image markdown is stripped from TTS input by `_strip_markdown_for_speech`.
+   In Notion, `_image_node_to_block` routes by URL:
+   - absolute `http(s)` → external image block (e.g. arXiv-HTML figures);
+   - local/relative image path (e.g. `/images/<paper_id>/figN.png`, served by
+     the web UI `/images` mount from `config.images_dir`) → a
+     `_LOCAL_UPLOAD_SENTINEL` placeholder, resolved by
+     `NotionClient._resolve_image_uploads` (called in `create_page`/`update_page`
+     before block append). It uploads the file once per resolved path via the
+     shared `_upload_file` (now takes `content_type`; reused by `attach_audio`)
+     and emits a Notion-hosted `file_upload` image block;
+   - anything else (`data:`, non-image) → paragraph fallback.
+   The upload path is gated by `config.notion_upload_images` (default `True`,
+   env `PAPER_ASSIST_NOTION_UPLOAD_IMAGES`). Disabled, missing file, oversize
+   (>20 MiB), out-of-base path, or upload failure all degrade to the paragraph
+   fallback — image work must never abort a valid sync (invariants 7, 8).
+   `file_uploads` is served under the pinned `NOTION_VERSION` (see invariant 8d);
+   Notion returns uploaded images back as `file`-type blocks, so the existing
+   read path round-trips them (the round-trip rewrites local `/images/...`
+   refs to short-lived presigned URLs on pull — see `docs/roadmap.md`).
 
 5b. **Browser Reader Mode was removed.** (2026-04-17, roadmap 2d.)
    The client-side Web Speech feature was dropped because it drifted out of sync
@@ -148,6 +165,18 @@ For user-facing setup and usage, see [README.md](README.md).
 8c. **Notion block writes must respect the API's nested-child depth limit.**
    Create/update paths should append deeper descendants recursively after shallower parent blocks exist.
 
+8d. **`NOTION_VERSION` is pinned to `2025-09-03` (data sources).**
+   That version is **not** backwards-compatible: databases own data sources, so
+   schema/query/page-parent move off `database_id`. All database-level calls go
+   through `NotionClient._ensure_data_source_id()` (cached per client; resolves
+   `data_sources[0].id` from `GET /databases/{id}`). Schema reads use
+   `GET /data_sources/{ds}`, listing uses `POST /data_sources/{ds}/query`, and
+   `create_page` parents pages with `{"type": "data_source_id",
+   "data_source_id": ...}`. Single-data-source databases only (multi-source is a
+   non-goal). Page/block/`file_uploads` endpoints are unchanged by the version.
+   Never reintroduce a raw `GET /databases/{id}` schema read or a
+   `{database_id}` page parent — both 400 under this version.
+
 ## Skill Workflow Gotchas
 
 - `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose, and should run the prompt's redundancy pass before import (no repeated method definitions; headline metrics appear only where they add value).
@@ -192,6 +221,9 @@ If touching Notion sync paths, verify:
 - `_read_rich_markdown` preserves inline formatting when converting Notion rich_text back to markdown; `_read_plain_text` is only for non-markdown contexts
 - Math in table cells: `_escape_math_pipes_in_tables` and `_normalise_display_math` handle `|` and `$$` inside table rows; both skip fenced code blocks
 - Mermaid code blocks are stored as Notion code blocks with language `"mermaid"` (Notion may not render as diagrams via API)
+- local figure images (`/images/<paper_id>/*.png`) upload once (deduped by resolved path) to a Notion `file_upload` image block; disabled/missing/oversize/out-of-base/upload-failure each degrade to the paragraph fallback without aborting the sync; recursion covers images nested in list children
+- inline Markdown links degrade gracefully: `_safe_inline_link_url` keeps only absolute `http(s)`/`mailto:` targets; non-resolvable ones (`#` anchors, relative paths) render as plain text so a single bad link never aborts the sync (invariants 7, 8). The shared summary prompt also forbids placeholder/relative links at generation time.
+- data-source resolution (invariant 8d): `_ensure_data_source_id` resolves+caches `data_sources[0].id`; schema/query/page-parent use `data_source_id`, not `database_id`; missing data sources raises a clear error
 
 ## Testing
 
@@ -201,10 +233,10 @@ pytest tests/
 
 Target files:
 - `tests/test_storage.py` — index/path invariants (including transcript round-trip + cleanup)
-- `tests/test_summarizer.py` — section parsing + `normalize_summary_body`
+- `tests/test_summarizer.py` — section parsing + `normalize_summary_body` (header strip gated on the generated wrapper's *shape* via `_looks_like_generated_header`: strips long many-author headers, but preserves wrapper-less YAML bodies whose real `---` section rules come later)
 - `tests/test_web_*.py` — route contracts
 - `tests/test_cli_*.py` — command behavior
-- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip
+- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + inline link sanitization (`_safe_inline_link_url`: anchor/relative→plain text, mailto/http preserved) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 - `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)
