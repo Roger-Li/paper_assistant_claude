@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import signal
 import subprocess
+import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
@@ -19,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingsNotAvailableError(Exception):
     """Raised when vector/hybrid search is requested but embeddings are missing."""
+
+
+class SearchCancelledError(Exception):
+    """Raised when a running qmd search is cancelled."""
 
 
 @dataclass
@@ -127,6 +133,7 @@ class SearchManager:
         query: str,
         limit: int = 10,
         mode: str = "text",
+        cancel_event: threading.Event | None = None,
     ) -> list[SearchResult]:
         """Run a search query against the qmd index.
 
@@ -145,7 +152,7 @@ class SearchManager:
             "-n", str(limit),
             "--json",
         ]
-        proc = self._run_qmd(args, check=False)
+        proc = self._run_qmd(args, check=False, cancel_event=cancel_event)
         stderr = proc.stderr or ""
         stdout = proc.stdout or ""
 
@@ -238,6 +245,7 @@ class SearchManager:
         args: list[str],
         *,
         check: bool = True,
+        cancel_event: threading.Event | None = None,
     ) -> subprocess.CompletedProcess:
         """Run qmd_command + ["--index", index_name] + args."""
         cmd = [
@@ -245,6 +253,8 @@ class SearchManager:
             "--index", self._config.qmd_index_name,
             *args,
         ]
+        if cancel_event is not None:
+            return self._run_qmd_cancellable(cmd, cancel_event, check=check)
         return subprocess.run(
             cmd,
             cwd=self._config.data_dir,
@@ -252,6 +262,116 @@ class SearchManager:
             text=True,
             check=check,
         )
+
+    def _run_qmd_cancellable(
+        self,
+        cmd: list[str],
+        cancel_event: threading.Event,
+        *,
+        check: bool,
+    ) -> subprocess.CompletedProcess:
+        """Run qmd while allowing an abandoned web request to terminate it."""
+        if cancel_event.is_set():
+            raise SearchCancelledError("Search request was cancelled")
+
+        popen_kwargs = {
+            "cwd": self._config.data_dir,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        while True:
+            if cancel_event.wait(0.05):
+                self._terminate_cancelled_process(process)
+                raise SearchCancelledError("Search request was cancelled")
+
+            try:
+                stdout, stderr = process.communicate(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                continue
+
+            completed = subprocess.CompletedProcess(
+                cmd,
+                process.returncode,
+                stdout,
+                stderr,
+            )
+            if check and completed.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    completed.returncode,
+                    cmd,
+                    output=stdout,
+                    stderr=stderr,
+                )
+            return completed
+
+    def _terminate_cancelled_process(self, process: subprocess.Popen) -> None:
+        """Terminate a cancelled qmd process group without blocking indefinitely."""
+        self._terminate_process_group(process)
+        if self._communicate_cancelled_process(process, timeout=1):
+            return
+
+        self._kill_process_group(process)
+        if not self._communicate_cancelled_process(process, timeout=1):
+            logger.warning("Timed out waiting for cancelled qmd process %s to exit", process.pid)
+
+    @staticmethod
+    def _communicate_cancelled_process(process: subprocess.Popen, *, timeout: float) -> bool:
+        try:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen) -> None:
+        if os.name == "nt":
+            try:
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                return
+            except (AttributeError, ProcessLookupError, OSError):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                return
+            except (ProcessLookupError, OSError):
+                pass
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen) -> None:
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    capture_output=True,
+                    check=False,
+                )
+                return
+            except (FileNotFoundError, OSError):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                return
+            except (ProcessLookupError, OSError):
+                pass
+
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
 
     def _extract_paper_id(self, file_path: str) -> str | None:
         """Extract paper_id from qmd file path like 'qmd://papers/2503-10291.md'.

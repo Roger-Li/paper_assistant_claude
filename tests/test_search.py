@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -16,12 +19,11 @@ from paper_assistant.models import (
     PaperMetadata,
     ProcessingStatus,
     ReadingStatus,
-    SourceType,
 )
 from paper_assistant.search import (
     EmbeddingsNotAvailableError,
+    SearchCancelledError,
     SearchManager,
-    SearchResult,
     _strip_summary_header,
     get_search_manager,
 )
@@ -142,6 +144,67 @@ class TestRunQmd:
             text=True,
             check=True,
         )
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process group behavior")
+    def test_cancellable_command_terminates_process_group(self, tmp_path):
+        process_started = threading.Event()
+        process_group_terminated = threading.Event()
+        process_terminated_directly = threading.Event()
+        cancel_event = threading.Event()
+        errors = []
+        popen_kwargs = {}
+
+        class HangingProcess:
+            pid = 4242
+            returncode = None
+
+            def __init__(self, *args, **kwargs):
+                popen_kwargs.update(kwargs)
+                process_started.set()
+
+            def communicate(self, timeout=None):
+                if not process_group_terminated.is_set():
+                    raise subprocess.TimeoutExpired("qmd", timeout)
+                self.returncode = -15
+                return "", ""
+
+            def terminate(self):
+                process_terminated_directly.set()
+
+            def kill(self):
+                process_terminated_directly.set()
+
+        config = _make_config(tmp_path)
+        mgr = SearchManager(config)
+
+        def run_search():
+            try:
+                mgr.search("test", cancel_event=cancel_event)
+            except Exception as exc:
+                errors.append(exc)
+
+        def terminate_group(pid, sig):
+            assert pid == HangingProcess.pid
+            assert sig == signal.SIGTERM
+            process_group_terminated.set()
+
+        with (
+            patch("subprocess.Popen", HangingProcess),
+            patch("paper_assistant.search.os.killpg", side_effect=terminate_group) as mock_killpg,
+        ):
+            search_thread = threading.Thread(target=run_search)
+            search_thread.start()
+            assert process_started.wait(timeout=1)
+            cancel_event.set()
+            search_thread.join(timeout=2)
+
+        assert not search_thread.is_alive()
+        assert popen_kwargs["start_new_session"] is True
+        mock_killpg.assert_called_once_with(HangingProcess.pid, signal.SIGTERM)
+        assert process_group_terminated.is_set()
+        assert not process_terminated_directly.is_set()
+        assert len(errors) == 1
+        assert isinstance(errors[0], SearchCancelledError)
 
 
 # --- setup ---

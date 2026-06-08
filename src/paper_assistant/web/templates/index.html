@@ -441,12 +441,14 @@ async function updateReadingStatus(select) {
     let debounceTimer = null;
     let requestId = 0;
     let activeController = null;
+    let renderedQuery = null;
 
     input.addEventListener('input', () => {
         clearTimeout(debounceTimer);
         cancelActiveSearch();
         const thisRequest = ++requestId;
         const q = input.value.trim();
+        renderedQuery = null;
         hideSearchStatus();
         if (q.length < MIN_QUERY_LENGTH) {
             resultsContainer.hidden = true;
@@ -494,9 +496,14 @@ async function updateReadingStatus(select) {
             timedOut = true;
             controller.abort();
         }, SEARCH_TIMEOUT_MS);
-        const hasResults = preserveResults && resultsList.querySelector('.search-result-item');
+        const hasResults = (
+            preserveResults
+            && renderedQuery === q
+            && resultsList.querySelector('.search-result-item')
+        );
 
         if (!hasResults) {
+            renderedQuery = null;
             resultsList.innerHTML = '';
         }
         showSearchStatus(
@@ -523,11 +530,13 @@ async function updateReadingStatus(select) {
                     return;
                 }
                 hideSearchStatus();
+                renderedQuery = null;
                 resultsList.innerHTML = '<div class="search-empty">No results found</div>';
                 resultsContainer.hidden = false;
                 return;
             }
             hideSearchStatus();
+            renderedQuery = q;
             resultsList.innerHTML = results.map(r => `
                 <a href="/paper/${r.paper_id}" class="search-result-item">
                     <span class="search-result-title">${escapeHtml(r.title)}</span>
@@ -560,6 +569,7 @@ async function updateReadingStatus(select) {
             showSearchStatus(`${message} Showing fast results.`, 'warning');
         } else {
             hideSearchStatus();
+            renderedQuery = null;
             resultsList.innerHTML = `<div class="search-error">${escapeHtml(message)}</div>`;
         }
         resultsContainer.hidden = false;

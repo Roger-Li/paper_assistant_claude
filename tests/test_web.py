@@ -982,7 +982,9 @@ class TestApiSearch:
             resp = c.get(f"/api/search?q=test&limit=5&mode={mode}")
 
         assert resp.status_code == 200
-        mock_search.assert_called_once_with("test", 5, mode)
+        call_args = mock_search.call_args
+        assert call_args.args[:3] == ("test", 5, mode)
+        assert isinstance(call_args.args[3], threading.Event)
 
     @pytest.mark.asyncio
     async def test_search_does_not_block_event_loop(self, tmp_path):
@@ -997,7 +999,7 @@ class TestApiSearch:
         search_started = threading.Event()
         release_search = threading.Event()
 
-        def slow_search(query, limit=10, mode="hybrid"):
+        def slow_search(query, limit=10, mode="hybrid", cancel_event=None):
             search_started.set()
             release_search.wait(timeout=2)
             return []
@@ -1027,6 +1029,49 @@ class TestApiSearch:
         assert empty_resp.json() == {"results": []}
         assert search_resp.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_search_cancels_worker_when_request_is_cancelled(self, tmp_path):
+        """Cancelling the HTTP task signals the underlying qmd search."""
+        from paper_assistant.search import SearchCancelledError
+
+        cfg = Config(
+            anthropic_api_key="test-key",
+            data_dir=tmp_path,
+            icloud_sync=False,
+            qmd_enabled=True,
+        )
+        cfg.ensure_dirs()
+        search_started = threading.Event()
+        worker_cancelled = threading.Event()
+
+        def cancellable_search(query, limit=10, mode="hybrid", cancel_event=None):
+            search_started.set()
+            if cancel_event.wait(timeout=2):
+                worker_cancelled.set()
+                raise SearchCancelledError("cancelled")
+            return []
+
+        with (
+            patch("paper_assistant.search.SearchManager.is_available", return_value=True),
+            patch(
+                "paper_assistant.search.SearchManager.search",
+                side_effect=cancellable_search,
+            ),
+        ):
+            app = create_app(cfg)
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as async_client:
+                request_task = asyncio.create_task(async_client.get("/api/search?q=test"))
+                assert await asyncio.to_thread(search_started.wait, 1)
+                request_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await request_task
+
+        assert worker_cancelled.wait(timeout=1)
+
     def test_search_falls_back_to_text_when_embeddings_missing(self, tmp_path):
         """Hybrid/vector search without embeddings falls back to text mode."""
         from paper_assistant.search import EmbeddingsNotAvailableError, SearchResult
@@ -1045,7 +1090,7 @@ class TestApiSearch:
 
         call_count = 0
 
-        def mock_search(query, limit=10, mode="hybrid"):
+        def mock_search(query, limit=10, mode="hybrid", cancel_event=None):
             nonlocal call_count
             call_count += 1
             if mode in ("hybrid", "vector"):
@@ -1147,3 +1192,5 @@ class TestSearchBarVisibility:
         assert "runSearch(q, 'text'" in resp.text
         assert "runSearch(q, 'hybrid'" in resp.text
         assert "Searching semantically..." in resp.text
+        assert "let renderedQuery = null;" in resp.text
+        assert "renderedQuery === q" in resp.text
