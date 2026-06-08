@@ -147,8 +147,9 @@ For user-facing setup and usage, see [README.md](README.md).
    search to text mode.
    `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
    Every qmd invocation passes `--index <qmd_index_name>` for isolation.
-   Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) everywhere:
-   CLI, web API, web UI, and skill workflows.
+   Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) for the
+   CLI, web API, and skill workflows. Web UI typeahead explicitly uses text
+   search for responsiveness; pressing Enter explicitly runs hybrid search.
    When embeddings are missing, hybrid/vector automatically falls back to text (BM25) with a warning.
    `paper-assist index-rebuild --embed` is a bulk-recovery tool (full re-index +
    embed pass) for cases where the incremental hooks haven't run — bulk imports

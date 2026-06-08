@@ -414,7 +414,10 @@ paper-assist search "test query" --json
 
 The default search mode is **hybrid** (BM25 + vector embeddings + LLM re-ranking) for best relevance. Imports and Notion sync keep both BM25 and embeddings up to date automatically; `paper-assist index-rebuild --embed` is only needed for initial setup over an existing library or to recover from out-of-band drift (e.g., bulk imports from another host).
 
-The web UI shows a search bar when qmd is enabled. The API endpoint is `GET /api/search?q=<query>&limit=10&mode=hybrid`.
+The web UI shows a search bar when qmd is enabled. Typing 2 or more characters runs
+debounced text search for responsive results; press Enter to run hybrid semantic
+search and refine those results. The API endpoint remains
+`GET /api/search?q=<query>&limit=10&mode=hybrid`.
 
 Search docs are kept in sync automatically — adding, editing, or deleting papers updates the search index.
 
@@ -454,7 +457,7 @@ Key URLs:
 - Local note create: `POST /api/create`
 
 Features:
-- **Search**: when qmd is enabled, a search bar appears on the papers list for instant full-text search; hidden when qmd is unavailable
+- **Search**: when qmd is enabled, typing in the papers-list search bar runs fast full-text search; press Enter for hybrid semantic search; hidden when qmd is unavailable
 - **Sorting**: click "Sort by" links on the papers list to sort by date added, title, tag, or arXiv ID
 - **Filtering**: filter papers by processing status, reading status, or tag
 - **Bulk tag edits**: from the list page, apply one or more `old => new` tag renames across all local papers; if the target tag already exists on a paper, the tags merge automatically

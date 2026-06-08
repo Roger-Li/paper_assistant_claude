@@ -10,6 +10,7 @@
 <div class="search-bar">
     <input type="search" id="search-input" placeholder="Search papers..." autocomplete="off">
     <div id="search-results" class="search-results" hidden>
+        <div id="search-status" class="search-status" role="status" aria-live="polite" hidden></div>
         <div id="search-results-list"></div>
     </div>
 </div>
@@ -432,25 +433,50 @@ async function updateReadingStatus(select) {
     if (!input) return;
 
     const resultsContainer = document.getElementById('search-results');
+    const searchStatus = document.getElementById('search-status');
     const resultsList = document.getElementById('search-results-list');
+    const MIN_QUERY_LENGTH = 2;
+    const SEARCH_DEBOUNCE_MS = 400;
+    const SEARCH_TIMEOUT_MS = 20000;
     let debounceTimer = null;
     let requestId = 0;
+    let activeController = null;
+    let renderedQuery = null;
 
     input.addEventListener('input', () => {
         clearTimeout(debounceTimer);
+        cancelActiveSearch();
+        const thisRequest = ++requestId;
         const q = input.value.trim();
-        if (!q) {
-            requestId++;
+        renderedQuery = null;
+        hideSearchStatus();
+        if (q.length < MIN_QUERY_LENGTH) {
             resultsContainer.hidden = true;
             return;
         }
-        debounceTimer = setTimeout(() => runSearch(q), 250);
+        resultsContainer.hidden = true;
+        debounceTimer = setTimeout(
+            () => runSearch(q, 'text', thisRequest, false),
+            SEARCH_DEBOUNCE_MS,
+        );
     });
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
+            clearTimeout(debounceTimer);
+            requestId++;
+            cancelActiveSearch();
             resultsContainer.hidden = true;
             input.blur();
+            return;
+        }
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            clearTimeout(debounceTimer);
+            const q = input.value.trim();
+            if (q.length < MIN_QUERY_LENGTH) return;
+            const thisRequest = ++requestId;
+            runSearch(q, 'hybrid', thisRequest, true);
         }
     });
 
@@ -461,23 +487,56 @@ async function updateReadingStatus(select) {
         }
     });
 
-    async function runSearch(q) {
-        const thisRequest = ++requestId;
+    async function runSearch(q, mode, thisRequest, preserveResults) {
+        cancelActiveSearch();
+        const controller = new AbortController();
+        activeController = controller;
+        let timedOut = false;
+        const timeoutTimer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, SEARCH_TIMEOUT_MS);
+        const hasResults = (
+            preserveResults
+            && renderedQuery === q
+            && resultsList.querySelector('.search-result-item')
+        );
+
+        if (!hasResults) {
+            renderedQuery = null;
+            resultsList.innerHTML = '';
+        }
+        showSearchStatus(
+            mode === 'hybrid' ? 'Searching semantically...' : 'Searching...',
+            'loading',
+        );
+        resultsContainer.hidden = false;
+
         try {
-            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=10`);
+            const resp = await fetch(
+                `/api/search?q=${encodeURIComponent(q)}&limit=10&mode=${encodeURIComponent(mode)}`,
+                {signal: controller.signal},
+            );
             if (thisRequest !== requestId) return;
             const data = await resp.json();
             if (data.error) {
-                resultsList.innerHTML = `<div class="search-error">${data.error}</div>`;
-                resultsContainer.hidden = false;
+                renderSearchFailure(data.error, Boolean(hasResults));
                 return;
             }
             const results = data.results || [];
             if (!results.length) {
+                if (hasResults) {
+                    showSearchStatus('No semantic matches; showing fast results.', 'warning');
+                    return;
+                }
+                hideSearchStatus();
+                renderedQuery = null;
                 resultsList.innerHTML = '<div class="search-empty">No results found</div>';
                 resultsContainer.hidden = false;
                 return;
             }
+            hideSearchStatus();
+            renderedQuery = q;
             resultsList.innerHTML = results.map(r => `
                 <a href="/paper/${r.paper_id}" class="search-result-item">
                     <span class="search-result-title">${escapeHtml(r.title)}</span>
@@ -487,9 +546,45 @@ async function updateReadingStatus(select) {
             `).join('');
             resultsContainer.hidden = false;
         } catch (err) {
-            resultsList.innerHTML = `<div class="search-error">Search failed: ${err.message}</div>`;
-            resultsContainer.hidden = false;
+            if (thisRequest !== requestId || (err.name === 'AbortError' && !timedOut)) return;
+            const message = timedOut ? 'Search timed out. Please try again.' : `Search failed: ${err.message}`;
+            renderSearchFailure(message, Boolean(hasResults));
+        } finally {
+            clearTimeout(timeoutTimer);
+            if (activeController === controller) {
+                activeController = null;
+            }
         }
+    }
+
+    function cancelActiveSearch() {
+        if (activeController) {
+            activeController.abort();
+            activeController = null;
+        }
+    }
+
+    function renderSearchFailure(message, preserveResults) {
+        if (preserveResults) {
+            showSearchStatus(`${message} Showing fast results.`, 'warning');
+        } else {
+            hideSearchStatus();
+            renderedQuery = null;
+            resultsList.innerHTML = `<div class="search-error">${escapeHtml(message)}</div>`;
+        }
+        resultsContainer.hidden = false;
+    }
+
+    function showSearchStatus(message, kind) {
+        searchStatus.textContent = message;
+        searchStatus.className = `search-status search-${kind}`;
+        searchStatus.hidden = false;
+    }
+
+    function hideSearchStatus() {
+        searchStatus.hidden = true;
+        searchStatus.textContent = '';
+        searchStatus.className = 'search-status';
     }
 
     function escapeHtml(str) {

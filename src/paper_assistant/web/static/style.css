@@ -367,11 +367,20 @@ body > nav ul:first-child li:first-child a {
   -webkit-box-orient: vertical;
 }
 
+.search-status,
 .search-empty,
 .search-error {
   padding: 0.85rem 1rem;
   font-size: 0.88rem;
   color: var(--pa-text-subtle);
+}
+
+.search-status {
+  border-bottom: 1px solid var(--pa-border-subtle);
+}
+
+.search-warning {
+  color: var(--pa-text-muted);
 }
 
 .search-error {

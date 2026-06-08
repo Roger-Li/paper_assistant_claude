@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
@@ -76,6 +78,33 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
 
     def list_all_tags() -> list[str]:
         return sorted({tag for paper in storage.list_papers() for tag in paper.tags})
+
+    async def run_search_for_request(
+        request: Request,
+        query: str,
+        limit: int,
+        mode: str,
+    ):
+        from paper_assistant.search import SearchCancelledError
+
+        cancel_event = threading.Event()
+        search_task = asyncio.create_task(
+            asyncio.to_thread(search_mgr.search, query, limit, mode, cancel_event)
+        )
+        try:
+            while not search_task.done():
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    break
+                await asyncio.sleep(0.05)
+            return await search_task
+        except asyncio.CancelledError:
+            cancel_event.set()
+            try:
+                await asyncio.shield(search_task)
+            except SearchCancelledError:
+                pass
+            raise
 
     @router.get("/", response_class=HTMLResponse)
     async def index(
@@ -498,11 +527,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"error": f"Paper {paper_id} not found"}
 
     @router.get("/api/search")
-    async def api_search(q: str = "", limit: int = 10, mode: str = "hybrid"):
+    async def api_search(request: Request, q: str = "", limit: int = 10, mode: str = "hybrid"):
         """Search papers via qmd index."""
         from starlette.responses import JSONResponse
 
-        from paper_assistant.search import EmbeddingsNotAvailableError
+        from paper_assistant.search import EmbeddingsNotAvailableError, SearchCancelledError
 
         if not search_mgr:
             return JSONResponse(
@@ -513,13 +542,17 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"results": []}
 
         try:
-            results = search_mgr.search(q, limit=limit, mode=mode)
+            results = await run_search_for_request(request, q, limit, mode)
         except EmbeddingsNotAvailableError:
             logger.info("Hybrid/vector search unavailable (no embeddings), falling back to text")
             try:
-                results = search_mgr.search(q, limit=limit, mode="text")
+                results = await run_search_for_request(request, q, limit, "text")
+            except SearchCancelledError:
+                return Response(status_code=499)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
+        except SearchCancelledError:
+            return Response(status_code=499)
         except RuntimeError as e:
             err_msg = str(e)
             if "not found" in err_msg.lower() or "collection" in err_msg.lower():
