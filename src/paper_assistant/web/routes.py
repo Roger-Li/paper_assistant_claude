@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Request
@@ -513,11 +514,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             return {"results": []}
 
         try:
-            results = search_mgr.search(q, limit=limit, mode=mode)
+            results = await asyncio.to_thread(search_mgr.search, q, limit, mode)
         except EmbeddingsNotAvailableError:
             logger.info("Hybrid/vector search unavailable (no embeddings), falling back to text")
             try:
-                results = search_mgr.search(q, limit=limit, mode="text")
+                results = await asyncio.to_thread(search_mgr.search, q, limit, "text")
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
         except RuntimeError as e:
