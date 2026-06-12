@@ -112,9 +112,9 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | `paper-assist import <url-or-id>` | Import pre-written markdown summary (arXiv ID, arXiv/HF paper URL, or web URL, optional `--model`) |
 | `paper-assist skill-import <url-or-id>` | Agent-oriented import with deterministic provenance, cleanup, and JSON output |
 | `paper-assist extract-text <pdf-path>` | Extract PDF text to markdown for skill fallback workflows |
-| `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark |
-| `paper-assist list` | List papers (`--status`, `--tag`) |
-| `paper-assist show <paper_id>` | Print summary in terminal |
+| `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark (`--script-file`/`--no-script-fallback`, `--json`, `--cleanup-file`) |
+| `paper-assist list` | List papers (`--status`, `--tag`, `--json`) |
+| `paper-assist show <paper_id>` | Print summary in terminal (`--body` prints the normalized plain-markdown body for scripts/skills) |
 | `paper-assist remove <paper_id>` | Remove paper (`--keep-files` supported) |
 | `paper-assist serve` | Start local web app |
 | `paper-assist regenerate-feed` | Rebuild RSS feed from index |
@@ -163,6 +163,9 @@ serves these from the `/images` mount, and Notion sync uploads each file once
 as a native Notion-hosted image block (toggle with
 `PAPER_ASSIST_NOTION_UPLOAD_IMAGES`; falls back to a text paragraph if disabled
 or the file is missing). The audio narration still strips image markdown.
+Local figure refs survive remote→local sync pulls: Notion's expiring presigned
+image URLs are rewritten back to `/images/<paper_id>/...` when the file exists
+locally, so pulled summaries never end up with dead image links.
 
 ### 2. Import your own summary
 
@@ -197,6 +200,13 @@ paper-assist create --title "Alignment Reading Note" \
   --file note.md \
   -t notes
 ```
+
+Agent-oriented flags mirror `skill-import`: `--script-file` supplies a
+pre-generated narration transcript (`--no-script-fallback` forbids the
+Anthropic fallback), `--json` prints the created entry — including the
+final `paper_id` after slug dedupe — and `--cleanup-file` deletes
+temporary artifacts on success. Failures now exit non-zero (previously the
+command printed the error and exited 0).
 
 ### 5. Run web UI on another host/port
 
@@ -321,6 +331,14 @@ Use:
 
 The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `src/paper_assistant/prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and, unless `--skip-transcript` or `--skip-audio` is present, generates `.artifacts/summarize-paper/<id>/transcript.md` from `src/paper_assistant/prompts/audio_script_instructions.md` before finishing through `paper-assist skill-import --script-file ... --no-script-fallback`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
 Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval.
+
+To synthesize a literature review across papers already in your library:
+
+```text
+/synthesize <title-or-topic> [--tags t1 --tags t2] [--query "..."] [--papers id1 id2 ...] [--no-sync-notion] [--skip-audio] [--skip-transcript]
+```
+
+The command resolves a paper set from tags, a search query, or explicit IDs (via `paper-assist list --json` / `search --json`), **shows you the matched papers and waits for confirmation**, then reads their stored summaries and generates a `lit-review`-template synthesis per `src/paper_assistant/prompts/paper_synthesis_instructions.md`. The result is imported as a local note (tagged `lit-review`) through `paper-assist create`, gets a narration transcript + audio like any other entry unless skipped, and syncs to Notion by default.
 
 ### Codex
 

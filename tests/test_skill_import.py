@@ -732,6 +732,35 @@ async def test_import_notion_failure_nonfatal(config, storage):
     assert result.notion_error == "sync boom"
 
 
+@pytest.mark.asyncio
+async def test_import_notion_timeout_reports_nonempty_error(config, storage):
+    """str(httpx.ReadTimeout()) is empty; notion_error must still be actionable."""
+    metadata = _metadata()
+
+    with (
+        patch("paper_assistant.pipeline.fetch_hf_metadata", new=AsyncMock(return_value=metadata)),
+        patch("paper_assistant.pipeline.generate_feed", new=Mock()),
+        patch(
+            "paper_assistant.pipeline.run_notion_sync",
+            new=AsyncMock(side_effect=httpx.ReadTimeout("")),
+        ),
+    ):
+        result = await import_paper_summary(
+            config=config,
+            storage=storage,
+            url=metadata.arxiv_url or metadata.paper_id,
+            markdown="# One-Pager\nImported body",
+            model="claude-code",
+            skip_audio=True,
+            sync_notion=True,
+        )
+
+    assert result.notion_synced is False
+    assert result.notion_error
+    assert "ReadTimeout" in result.notion_error
+    assert "may still have landed" in result.notion_error
+
+
 def _import_result(tmp_path: Path) -> ImportResult:
     return ImportResult(
         paper_id="2503.10291",

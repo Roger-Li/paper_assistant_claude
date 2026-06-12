@@ -407,8 +407,13 @@ def _update_feed_step(config, storage, paper, step_label):
         console.print(f"[yellow]Warning: Feed generation failed:[/yellow] {e}")
 
 
-def _copy_to_icloud(config, paper, title, paper_id):
-    """Copy audio to iCloud Drive for iPhone access."""
+def _copy_to_icloud(config, paper, title, paper_id, *, quiet: bool = False) -> str | None:
+    """Copy audio to iCloud Drive for iPhone access.
+
+    With ``quiet`` (JSON output mode) nothing is printed — stdout must stay
+    machine-parseable — and a failure message is returned instead so the
+    caller can surface it through structured warnings.
+    """
     import shutil
 
     try:
@@ -416,9 +421,14 @@ def _copy_to_icloud(config, paper, title, paper_id):
         safe_title = title[:60].replace("/", "-").replace(":", " -")
         icloud_dest = config.icloud_dir / f"{safe_title} [{paper_id}].mp3"
         shutil.copy2(config.data_dir / paper.audio_path, icloud_dest)
-        console.print(f"  iCloud:  Synced to {icloud_dest.name}")
+        if not quiet:
+            console.print(f"  iCloud:  Synced to {icloud_dest.name}")
+        return None
     except Exception as e:
+        if quiet:
+            return f"iCloud copy failed: {e}"
         console.print(f"[yellow]Warning: iCloud copy failed:[/yellow] {e}")
+        return None
 
 
 def _read_markdown_input(file_path: str | None) -> str:
@@ -654,8 +664,10 @@ def _validate_cleanup_files(paths: tuple[str, ...]) -> list[Path]:
     return validated
 
 
-def _recovery_artifact_paths(file_path: str, cleanup_paths: list[Path]) -> list[Path]:
-    paths: list[Path] = [Path(file_path)]
+def _recovery_artifact_paths(
+    file_path: str | None, cleanup_paths: list[Path], *extra_paths: str | None
+) -> list[Path]:
+    paths: list[Path] = [Path(p) for p in (file_path, *extra_paths) if p]
     paths.extend(cleanup_paths)
 
     deduped: list[Path] = []
@@ -907,6 +919,20 @@ def extract_text(pdf_path: str, max_pages: int, output: str | None) -> None:
     help="Skip the derived narration transcript (audio falls back to raw summary).",
 )
 @click.option("--tags", "-t", multiple=True, help="Tags to apply to this note.")
+@click.option(
+    "--script-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Use this file as the narration transcript instead of generating one.",
+)
+@click.option(
+    "--no-script-fallback",
+    is_flag=True,
+    default=False,
+    help="Never call the Anthropic API for narration; require --script-file or warn.",
+)
+@click.option("--cleanup-file", multiple=True, help="Temporary file to delete after a successful create.")
+@click.option("--json", "json_output", is_flag=True, help="Output the created entry as JSON.")
 @click.pass_context
 def create_note(
     ctx: click.Context,
@@ -916,68 +942,72 @@ def create_note(
     skip_audio: bool,
     skip_transcript: bool,
     tags: tuple[str, ...],
+    script_file: str | None,
+    no_script_fallback: bool,
+    cleanup_file: tuple[str, ...],
+    json_output: bool,
 ) -> None:
     """Create a local markdown-backed note entry from clipboard or file."""
+    cleanup_paths = _validate_cleanup_files(cleanup_file)
     markdown = _read_markdown_input(file_path)
 
     if not markdown.strip():
-        console.print("[red]No markdown content found.[/red]")
+        message = "No markdown content found."
         if not file_path:
-            console.print("Copy your note markdown to the clipboard first, or use --file.")
-        return
+            message += " Copy your note markdown to the clipboard first, or use --file."
+        # Exit non-zero so automated callers (e.g. /synthesize parsing --json
+        # output) never mistake an empty input for a successful create.
+        raise click.ClickException(message)
 
-    asyncio.run(
-        _create_note(
-            ctx.obj,
-            title=title,
-            source_url=source_url,
-            markdown=markdown,
-            skip_audio=skip_audio,
-            skip_transcript=skip_transcript,
-            tags=list(tags),
-        )
-    )
+    provided_script_markdown: str | None = None
+    if script_file is not None:
+        provided_script_markdown = Path(script_file).read_text(encoding="utf-8").strip()
+        if not provided_script_markdown:
+            raise click.ClickException("--script-file was empty.")
 
-
-async def _create_note(
-    obj: dict,
-    *,
-    title: str,
-    source_url: str | None,
-    markdown: str,
-    skip_audio: bool,
-    skip_transcript: bool,
-    tags: list[str],
-) -> None:
-    from paper_assistant.config import load_config
-    from paper_assistant.pipeline import create_local_entry
-    from paper_assistant.storage import StorageManager
-
-    config = load_config(**obj)
-    config.ensure_dirs()
-    storage = StorageManager(config)
-
-    console.print("[bold]Creating local note entry...[/bold]")
+    if not json_output:
+        console.print("[bold]Creating local note entry...[/bold]")
     try:
-        outcome = await create_local_entry(
-            config=config,
-            storage=storage,
-            title=title,
-            markdown=markdown,
-            source_url=source_url,
-            tags=tags,
-            skip_audio=skip_audio,
-            skip_transcript=skip_transcript,
+        config, outcome = asyncio.run(
+            _run_create_pipeline(
+                ctx.obj,
+                title=title,
+                source_url=source_url,
+                markdown=markdown,
+                skip_audio=skip_audio,
+                skip_transcript=skip_transcript,
+                tags=list(tags),
+                provided_script_markdown=provided_script_markdown,
+                skip_script_generation=no_script_fallback,
+            )
         )
-    except Exception as e:
-        console.print(f"[red]Error creating local note:[/red] {e}")
-        return
+    except Exception as exc:
+        recovery_paths = _recovery_artifact_paths(file_path, cleanup_paths, script_file)
+        if recovery_paths:
+            console.print("[yellow]Artifacts preserved for manual recovery:[/yellow]")
+            for recovery_path in recovery_paths:
+                console.print(f"  - {recovery_path}")
+        raise click.ClickException(str(exc)) from exc
+
+    for cleanup_path in cleanup_paths:
+        try:
+            cleanup_path.unlink()
+        except Exception as exc:
+            outcome.warnings.append(f"Cleanup failed for {cleanup_path}: {exc}")
 
     paper = outcome.paper
     paper_id = paper.metadata.paper_id
 
     if paper.audio_path and config.icloud_sync:
-        _copy_to_icloud(config, paper, paper.metadata.title, paper_id)
+        icloud_error = _copy_to_icloud(
+            config, paper, paper.metadata.title, paper_id, quiet=json_output
+        )
+        if icloud_error:
+            outcome.warnings.append(icloud_error)
+
+    if json_output:
+        click.echo(json.dumps(_local_entry_result_to_dict(outcome, config), indent=2))
+        return
 
     console.print()
     console.print("[green]Done![/green] Local note created successfully.")
@@ -991,6 +1021,65 @@ async def _create_note(
         console.print(f"[yellow]Warning:[/yellow] {warning}")
 
 
+async def _run_create_pipeline(
+    obj: dict,
+    *,
+    title: str,
+    source_url: str | None,
+    markdown: str,
+    skip_audio: bool,
+    skip_transcript: bool,
+    tags: list[str],
+    provided_script_markdown: str | None = None,
+    skip_script_generation: bool = False,
+):
+    from paper_assistant.config import load_config
+    from paper_assistant.pipeline import create_local_entry
+    from paper_assistant.storage import StorageManager
+
+    config = load_config(**obj)
+    config.ensure_dirs()
+    storage = StorageManager(config)
+
+    outcome = await create_local_entry(
+        config=config,
+        storage=storage,
+        title=title,
+        markdown=markdown,
+        source_url=source_url,
+        tags=tags,
+        skip_audio=skip_audio,
+        skip_transcript=skip_transcript,
+        provided_script_markdown=provided_script_markdown,
+        skip_script_generation=skip_script_generation,
+    )
+    return config, outcome
+
+
+def _local_entry_result_to_dict(outcome, config) -> dict[str, object]:
+    paper = outcome.paper
+    return {
+        # Post-dedupe slug (invariant 1c) — authoritative for follow-up
+        # commands like `notion-sync --paper <id>`.
+        "paper_id": paper.metadata.paper_id,
+        "title": paper.metadata.title,
+        # .absolute() keeps the documented absolute-path contract even when
+        # the data dir was configured relative to the current directory.
+        "summary_path": str(Path(outcome.summary_path).absolute()),
+        "transcript_path": (
+            str((config.data_dir / paper.transcript_path).absolute())
+            if paper.transcript_path
+            else None
+        ),
+        "audio_path": (
+            str((config.data_dir / paper.audio_path).absolute())
+            if paper.audio_path
+            else None
+        ),
+        "warnings": outcome.warnings,
+    }
+
+
 @main.command("list")
 @click.option(
     "--status",
@@ -999,8 +1088,9 @@ async def _create_note(
     help="Filter by processing status.",
 )
 @click.option("--tag", "-t", help="Filter by tag.")
+@click.option("--json", "json_output", is_flag=True, help="Output papers as JSON.")
 @click.pass_context
-def list_papers(ctx: click.Context, status: str, tag: str | None) -> None:
+def list_papers(ctx: click.Context, status: str, tag: str | None, json_output: bool) -> None:
     """List all processed papers."""
     from paper_assistant.config import load_config
     from paper_assistant.models import ProcessingStatus
@@ -1011,6 +1101,33 @@ def list_papers(ctx: click.Context, status: str, tag: str | None) -> None:
 
     status_filter = None if status == "all" else ProcessingStatus(status)
     papers = storage.list_papers(status=status_filter, tag=tag)
+
+    if json_output:
+        entries = [
+            {
+                "paper_id": p.metadata.paper_id,
+                "title": p.metadata.title,
+                "tags": p.tags,
+                "date_added": p.date_added.isoformat(),
+                "source_type": p.metadata.source_type.value,
+                "status": p.status.value,
+                "reading_status": p.reading_status.value,
+                # Absolute path — the supported way for skill workflows to
+                # locate stored summaries without guessing the data dir.
+                # .absolute() covers relative --data-dir/PAPER_ASSIST_DATA_DIR.
+                "summary_path": (
+                    str((config.data_dir / p.summary_path).absolute())
+                    if p.summary_path
+                    else None
+                ),
+                "has_audio": p.audio_path is not None,
+                "arxiv_id": p.metadata.arxiv_id,
+                "source_url": p.metadata.source_url,
+            }
+            for p in papers
+        ]
+        click.echo(json.dumps(entries, indent=2))
+        return
 
     if not papers:
         console.print("[dim]No papers found.[/dim]")
@@ -1040,8 +1157,14 @@ def list_papers(ctx: click.Context, status: str, tag: str | None) -> None:
 
 @main.command()
 @click.argument("paper_id")
+@click.option(
+    "--body",
+    "body_only",
+    is_flag=True,
+    help="Print the normalized summary body as plain markdown (YAML front matter and generated header stripped via normalize_summary_body) — for skill workflows.",
+)
 @click.pass_context
-def show(ctx: click.Context, paper_id: str) -> None:
+def show(ctx: click.Context, paper_id: str, body_only: bool) -> None:
     """Display the summary for a specific paper."""
     from paper_assistant.config import load_config
     from paper_assistant.storage import StorageManager
@@ -1051,14 +1174,23 @@ def show(ctx: click.Context, paper_id: str) -> None:
     paper = storage.get_paper(paper_id)
 
     if not paper:
+        if body_only:
+            raise click.ClickException(f"Paper {paper_id} not found.")
         console.print(f"[red]Paper {paper_id} not found.[/red]")
         return
 
     if not paper.summary_path:
+        if body_only:
+            raise click.ClickException(f"Paper {paper_id} has no summary yet.")
         console.print(f"[yellow]Paper {paper_id} has no summary yet.[/yellow]")
         return
 
     content = (config.data_dir / paper.summary_path).read_text(encoding="utf-8")
+    if body_only:
+        from paper_assistant.summarizer import normalize_summary_body
+
+        click.echo(normalize_summary_body(content))
+        return
     console.print(Markdown(content))
 
 
@@ -1437,7 +1569,7 @@ def notion_sync(ctx: click.Context, paper_id: str | None, dry_run: bool) -> None
 
 async def _notion_sync(obj: dict, paper_id: str | None, dry_run: bool) -> None:
     from paper_assistant.config import load_config
-    from paper_assistant.notion import sync_notion
+    from paper_assistant.notion import describe_exception, sync_notion
     from paper_assistant.storage import StorageManager
 
     config = load_config(**obj)
@@ -1456,7 +1588,7 @@ async def _notion_sync(obj: dict, paper_id: str | None, dry_run: bool) -> None:
             dry_run=dry_run,
         )
     except Exception as e:
-        console.print(f"[red]Notion sync failed:[/red] {e}")
+        console.print(f"[red]Notion sync failed:[/red] {describe_exception(e)}")
         return
 
     if not dry_run and report.touched_paper_ids:

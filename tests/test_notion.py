@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from paper_assistant.config import Config
@@ -14,13 +15,17 @@ from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, Readi
 from paper_assistant.notion import (
     NotionClient,
     NotionPaper,
+    describe_exception,
     sync_notion,
     _LOCAL_UPLOAD_SENTINEL,
+    _NOTION_WRITE_TIMEOUT,
+    _is_notion_hosted_file_url,
     _looks_like_local_image_path,
     _markdown_to_blocks,
     _blocks_to_markdown,
     _normalize_code_language,
     _read_rich_markdown,
+    _restore_local_image_refs,
 )
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import SummarizationResult, format_summary_file
@@ -1503,6 +1508,22 @@ async def test_resolve_uploads_local_image_to_file_upload_block(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resolve_uploads_percent_encoded_ref(tmp_path):
+    """Refs emitted by _restore_local_image_refs are encoded; upload decodes them."""
+    img_dir = tmp_path / "images" / "2605.13779"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig 1.png").write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes")
+    blocks = _markdown_to_blocks("![Figure 1](/images/2605.13779/fig%201.png)")
+    client = _StubUploadClient()
+
+    await client._resolve_image_uploads(blocks, image_base_dir=tmp_path, enabled=True)
+
+    assert len(client.uploads) == 1
+    assert client.uploads[0][0].name == "fig 1.png"
+    assert blocks[0]["image"]["type"] == "file_upload"
+
+
+@pytest.mark.asyncio
 async def test_resolve_dedupes_repeated_paths(tmp_path):
     (tmp_path / "images").mkdir()
     (tmp_path / "images" / "f.png").write_bytes(b"x")
@@ -1722,3 +1743,293 @@ async def test_create_page_parent_uses_data_source_id():
         "type": "data_source_id",
         "data_source_id": "ds-1",
     }
+
+
+# ---------------------------------------------------------------------------
+# Local image-ref restoration on pull (presigned Notion file URLs)
+# ---------------------------------------------------------------------------
+
+
+_PRESIGNED_URL = (
+    "https://prod-files-secure.s3.us-west-2.amazonaws.com/ws-1/blob-2/fig1.png"
+    "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=3600&X-Amz-Signature=abc123"
+)
+
+
+class TestIsNotionHostedFileUrl:
+    def test_presigned_s3_url_detected(self):
+        assert _is_notion_hosted_file_url(_PRESIGNED_URL)
+
+    def test_legacy_notion_static_path_style_detected(self):
+        assert _is_notion_hosted_file_url(
+            "https://s3.us-west-2.amazonaws.com/secure.notion-static.com/blob/fig1.png"
+            "?X-Amz-Expires=3600&X-Amz-Signature=abc"
+        )
+
+    def test_notion_so_host_detected(self):
+        assert _is_notion_hosted_file_url(
+            "https://file.notion.so/f/blob/fig1.png?X-Amz-Expires=3600"
+        )
+
+    def test_third_party_presigned_s3_excluded(self):
+        assert not _is_notion_hosted_file_url(
+            "https://my-bucket.s3.us-east-1.amazonaws.com/assets/fig1.png"
+            "?X-Amz-Expires=3600&X-Amz-Signature=abc"
+        )
+
+    def test_notion_bucket_without_presign_params_excluded(self):
+        assert not _is_notion_hosted_file_url(
+            "https://prod-files-secure.s3.us-west-2.amazonaws.com/ws/blob/fig1.png"
+        )
+
+    def test_plain_external_url_excluded(self):
+        assert not _is_notion_hosted_file_url("https://arxiv.org/html/x/x1.png")
+
+    def test_local_path_excluded(self):
+        assert not _is_notion_hosted_file_url("/images/2503.10291/fig1.png")
+
+    def test_empty_excluded(self):
+        assert not _is_notion_hosted_file_url("")
+
+
+class TestRestoreLocalImageRefs:
+    def _images_dir(self, tmp_path, paper_id="2503.10291", filename="fig1.png"):
+        img_dir = tmp_path / "images" / paper_id
+        img_dir.mkdir(parents=True)
+        (img_dir / filename).write_bytes(b"\x89PNG fake")
+        return tmp_path / "images"
+
+    def test_presigned_url_with_local_file_rewritten(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        md = f"Intro\n\n![Figure 1: overview]({_PRESIGNED_URL})\n\nOutro"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert "![Figure 1: overview](/images/2503.10291/fig1.png)" in restored
+        assert "X-Amz" not in restored
+
+    def test_presigned_url_without_local_file_unchanged(self, tmp_path):
+        images_dir = tmp_path / "images"
+        md = f"![Figure 1]({_PRESIGNED_URL})"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert restored == md
+
+    def test_external_image_unchanged_even_with_matching_local_file(self, tmp_path):
+        images_dir = self._images_dir(tmp_path, filename="x1.png")
+        md = "![Figure 1](https://arxiv.org/html/x/x1.png)"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert restored == md
+
+    def test_percent_encoded_basename_matches_unquoted_file(self, tmp_path):
+        """Decodes for the filesystem lookup, re-encodes in the emitted ref."""
+        images_dir = self._images_dir(tmp_path, filename="fig 1.png")
+        url = (
+            "https://prod-files-secure.s3.us-west-2.amazonaws.com/ws/blob/fig%201.png"
+            "?X-Amz-Expires=3600&X-Amz-Signature=abc"
+        )
+        md = f"![Figure 1]({url})"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        # A raw space would not parse as a Markdown image destination, so the
+        # emitted ref must stay percent-encoded (decoded again at upload time).
+        assert "![Figure 1](/images/2503.10291/fig%201.png)" in restored
+
+    def test_third_party_presigned_url_not_rewritten(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        url = (
+            "https://my-bucket.s3.us-east-1.amazonaws.com/assets/fig1.png"
+            "?X-Amz-Expires=3600&X-Amz-Signature=abc"
+        )
+        md = f"![Figure 1]({url})"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert restored == md
+
+    def test_fenced_code_blocks_untouched(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        md = (
+            f"![Figure 1]({_PRESIGNED_URL})\n\n"
+            "```markdown\n"
+            f"![Figure 1]({_PRESIGNED_URL})\n"
+            "```\n"
+        )
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        lines = restored.split("\n")
+        assert lines[0] == "![Figure 1](/images/2503.10291/fig1.png)"
+        # The same image syntax inside the fence is literal code — unchanged.
+        assert lines[3] == f"![Figure 1]({_PRESIGNED_URL})"
+
+    def test_non_image_links_untouched(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        md = f"See [the file]({_PRESIGNED_URL}) for details."
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert restored == md
+
+    def test_caption_with_nested_brackets_rewritten(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        md = f"![Figure 1: [CLS] token attention [12]]({_PRESIGNED_URL})"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert (
+            "![Figure 1: [CLS] token attention [12]](/images/2503.10291/fig1.png)"
+            in restored
+        )
+
+    def test_caption_with_escaped_bracket_rewritten(self, tmp_path):
+        images_dir = self._images_dir(tmp_path)
+        md = f"![Figure 1: a \\] bracket]({_PRESIGNED_URL})"
+        restored = _restore_local_image_refs(
+            md, paper_id="2503.10291", images_dir=images_dir
+        )
+        assert "![Figure 1: a \\] bracket](/images/2503.10291/fig1.png)" in restored
+
+
+@pytest.mark.asyncio
+async def test_sync_presigned_image_churn_does_not_dirty_local(tmp_path):
+    """Pure presigned-URL churn must not register as a remote summary change."""
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+    body = "# One-Pager\nSame body\n\n![Figure 1](/images/2503.10291/fig1.png)"
+    paper = Paper(metadata=_make_metadata(), tags=["local"], reading_status=ReadingStatus.UNREAD)
+    _save_summary(storage, paper, body)
+
+    img_dir = config.images_dir / "2503.10291"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig1.png").write_bytes(b"\x89PNG fake")
+
+    old = datetime.now(timezone.utc) - timedelta(days=2)
+    p = storage.get_paper("2503.10291")
+    p.local_modified_at = old
+    storage.add_paper(p)
+    summary_before = (config.data_dir / p.summary_path).read_text(encoding="utf-8")
+
+    remote = NotionPaper(
+        page_id="page-1",
+        arxiv_id="2503.10291",
+        source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
+        title="Sample Paper",
+        authors=["Alice", "Bob"],
+        tags=["local"],
+        reading_status="unread",
+        summary_markdown=body.replace("/images/2503.10291/fig1.png", _PRESIGNED_URL),
+        summary_last_modified=datetime.now(timezone.utc),
+        local_last_modified=old,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    fake_client = FakeNotionClient(remote_papers=[remote])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert not any(a.startswith("pull remote summary->") for a in report.actions)
+    assert report.local_updated == 0
+    updated = storage.get_paper("2503.10291")
+    summary_after = (config.data_dir / updated.summary_path).read_text(encoding="utf-8")
+    assert summary_after == summary_before
+
+
+@pytest.mark.asyncio
+async def test_sync_pull_restores_local_image_refs(tmp_path):
+    """A genuine remote edit pulls with local /images refs, not presigned URLs."""
+    config = _make_config(tmp_path)
+    storage = StorageManager(config)
+    paper = Paper(metadata=_make_metadata(), tags=["local"], reading_status=ReadingStatus.UNREAD)
+    _save_summary(storage, paper, "# One-Pager\nOld summary")
+
+    img_dir = config.images_dir / "2503.10291"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig1.png").write_bytes(b"\x89PNG fake")
+
+    old = datetime.now(timezone.utc) - timedelta(days=2)
+    p = storage.get_paper("2503.10291")
+    p.local_modified_at = old
+    storage.add_paper(p)
+
+    remote = NotionPaper(
+        page_id="page-1",
+        arxiv_id="2503.10291",
+        source_slug=None,
+        source_type=SourceType.ARXIV.value,
+        source_url=None,
+        title="Sample Paper",
+        authors=["Alice", "Bob"],
+        tags=["local"],
+        reading_status="unread",
+        summary_markdown=f"# One-Pager\nEdited remotely\n\n![Figure 1]({_PRESIGNED_URL})",
+        summary_last_modified=datetime.now(timezone.utc),
+        local_last_modified=old,
+        archived=False,
+        notion_last_edited_time=datetime.now(timezone.utc),
+    )
+
+    fake_client = FakeNotionClient(remote_papers=[remote])
+    report = await sync_notion(config=config, storage=storage, notion_client=fake_client)
+
+    assert report.local_updated == 1
+    updated = storage.get_paper("2503.10291")
+    summary_text = (config.data_dir / updated.summary_path).read_text(encoding="utf-8")
+    assert "Edited remotely" in summary_text
+    assert "![Figure 1](/images/2503.10291/fig1.png)" in summary_text
+    assert "X-Amz" not in summary_text
+
+
+# ---------------------------------------------------------------------------
+# describe_exception + write timeouts
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeException:
+    def test_read_timeout_is_not_empty(self):
+        assert describe_exception(httpx.ReadTimeout("")) != ""
+
+    def test_normal_exception_uses_str(self):
+        assert describe_exception(ValueError("boom")) == "boom"
+
+
+class _TimeoutRecordingClient(NotionClient):
+    """NotionClient recording the timeout each _request call was made with."""
+
+    def __init__(self) -> None:
+        super().__init__("token", "db")
+        self.calls: list[tuple[str, str, float]] = []
+
+    async def _request(
+        self, method, path, *, json_payload=None, params=None, timeout=60.0
+    ):
+        self.calls.append((method, path, timeout))
+        if method == "GET" and path.endswith("/children"):
+            return {"results": [{"id": "old-block-1"}], "has_more": False}
+        return {"results": []}
+
+
+@pytest.mark.asyncio
+async def test_append_blocks_uses_write_timeout():
+    client = _TimeoutRecordingClient()
+    await client.append_blocks("page-1", [{"object": "block", "type": "divider", "divider": {}}])
+
+    assert client.calls == [
+        ("PATCH", "/blocks/page-1/children", _NOTION_WRITE_TIMEOUT)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replace_page_body_archives_blocks_with_write_timeout():
+    client = _TimeoutRecordingClient()
+    await client.replace_page_body("page-1", [])
+
+    by_path = {(method, path): timeout for method, path, timeout in client.calls}
+    assert by_path[("GET", "/blocks/page-1/children")] == 60.0
+    assert by_path[("PATCH", "/blocks/old-block-1")] == _NOTION_WRITE_TIMEOUT

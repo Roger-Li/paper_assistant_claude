@@ -21,7 +21,7 @@ from paper_assistant.audio_assets import render_audio_assets
 from paper_assistant.config import Config
 from paper_assistant.hf_papers import fetch_metadata as fetch_hf_metadata
 from paper_assistant.models import Paper, PaperMetadata, ProcessingStatus, SourceType
-from paper_assistant.notion import sync_notion as run_notion_sync
+from paper_assistant.notion import describe_exception, sync_notion as run_notion_sync
 from paper_assistant.podcast import generate_feed
 from paper_assistant.storage import StorageManager
 from paper_assistant.summarizer import (
@@ -77,6 +77,8 @@ async def create_local_entry(
     tags: list[str] | None = None,
     skip_audio: bool = False,
     skip_transcript: bool = False,
+    provided_script_markdown: str | None = None,
+    skip_script_generation: bool = False,
 ) -> LocalEntryResult:
     """Create a local markdown-backed note entry without fetching remote content."""
     clean_title = title.strip()
@@ -128,6 +130,8 @@ async def create_local_entry(
         source_markdown=markdown,
         skip_transcript=skip_transcript,
         skip_audio=skip_audio,
+        provided_script_markdown=provided_script_markdown,
+        skip_script_generation=skip_script_generation,
     )
     warnings.extend(audio_result.warnings)
     paper = storage.get_paper(paper_id) or paper
@@ -264,7 +268,12 @@ async def import_paper_summary(
             )
             notion_synced = True
         except Exception as exc:
-            notion_error = str(exc)
+            notion_error = describe_exception(exc)
+            if isinstance(exc, httpx.TimeoutException):
+                notion_error += (
+                    " (the Notion write may still have landed — verify the page"
+                    " or re-run notion-sync)"
+                )
 
     # Update search index
     from paper_assistant.search import get_search_manager
