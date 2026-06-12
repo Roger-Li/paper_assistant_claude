@@ -69,7 +69,10 @@ For user-facing setup and usage, see [README.md](README.md).
    and `pipeline.create_local_entry`) delegates audio work through this helper.
    Skill-driven imports that already generated a transcript pass
    `provided_script_markdown` and may set `skip_script_generation=True`
-   to suppress silent Anthropic fallback.
+   to suppress silent Anthropic fallback. `paper-assist create` exposes the
+   same pair as `--script-file`/`--no-script-fallback` (plus `--json` and
+   `--cleanup-file` with skill-import semantics; failures now exit non-zero),
+   plumbed through `pipeline.create_local_entry`.
    Backends raise typed errors (`MlxConfigError`, `MlxTransientError`, `EdgeTTSError`,
    `FfmpegMissingError`); the helper converts them to warnings so import flows
    degrade gracefully (invariant 7).
@@ -116,9 +119,14 @@ For user-facing setup and usage, see [README.md](README.md).
    (>20 MiB), out-of-base path, or upload failure all degrade to the paragraph
    fallback — image work must never abort a valid sync (invariants 7, 8).
    `file_uploads` is served under the pinned `NOTION_VERSION` (see invariant 8d);
-   Notion returns uploaded images back as `file`-type blocks, so the existing
-   read path round-trips them (the round-trip rewrites local `/images/...`
-   refs to short-lived presigned URLs on pull — see `docs/roadmap.md`).
+   Notion returns uploaded images back as `file`-type blocks with short-lived
+   presigned S3 URLs. Pull paths (`_set_local_from_remote`, `_import_remote_only`)
+   run `_restore_local_image_refs`: a presigned Notion-hosted file URL (known
+   Notion storage hosts only) whose basename exists under
+   `images_dir/<paper_id>/` is rewritten back to a percent-encoded
+   `/images/<paper_id>/<basename>` ref *before* the remote-vs-local comparison,
+   so presigned-URL churn never dirties local state and pulled summaries keep
+   stable local refs instead of expiring links.
 
 5b. **Browser Reader Mode was removed.** (2026-04-17, roadmap 2d.)
    The client-side Web Speech feature was dropped because it drifted out of sync
@@ -185,7 +193,8 @@ For user-facing setup and usage, see [README.md](README.md).
 - `skill-import` must always receive the canonical arXiv URL (`https://arxiv.org/abs/<id>`), not HuggingFace or other source URLs, so that `paper_id` resolves to the arXiv ID.
 - Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`. The Kiro skill omits Notion sync entirely (designed for environments without Notion credentials).
 - Skill-based summary workflows now generate `.artifacts/summarize-paper/<paper_id>/transcript.md` by default when audio is enabled, then pass `--script-file ... --no-script-fallback` to `skill-import`. If transcript generation fails, they warn first and fall back to `--skip-transcript` or `--skip-audio` instead of shipping an empty script file.
-- Artifacts live under `.artifacts/summarize-paper/` during skill runs.
+- Artifacts live under `.artifacts/summarize-paper/` during skill runs; `/synthesize` uses `.artifacts/synthesize/<slug>/`.
+- `/synthesize` (`.claude/commands/synthesize.md`) builds a cross-paper lit review from stored summaries per `src/paper_assistant/prompts/paper_synthesis_instructions.md` and imports it via `paper-assist create`. It must confirm the resolved paper set with the user before generating. `create --json` returns the post-dedupe `paper_id` (authoritative — pass it to `notion-sync --paper`), and JSON mode keeps stdout machine-parseable (iCloud copy messages route to structured warnings, never stdout). `search --json` hits carry only `paper_id`/`title`/`score`/`snippet` — hydrate them through `list --json` for tags and `summary_path`. Skills read summary bodies via `paper-assist show <id> --body`, which goes through `normalize_summary_body()` (invariant 5d) — never re-implement front-matter stripping in skill instructions.
 
 ## Web UI / Frontend
 
@@ -223,6 +232,10 @@ If touching Notion sync paths, verify:
 - Math in table cells: `_escape_math_pipes_in_tables` and `_normalise_display_math` handle `|` and `$$` inside table rows; both skip fenced code blocks
 - Mermaid code blocks are stored as Notion code blocks with language `"mermaid"` (Notion may not render as diagrams via API)
 - local figure images (`/images/<paper_id>/*.png`) upload once (deduped by resolved path) to a Notion `file_upload` image block; disabled/missing/oversize/out-of-base/upload-failure each degrade to the paragraph fallback without aborting the sync; recursion covers images nested in list children
+- pull paths restore local image refs: `_restore_local_image_refs` rewrites presigned **Notion-hosted** file URLs (`prod-files-secure`/`notion-static` S3 or `*.notion.so` host, plus `X-Amz-` params — third-party presigned S3 is excluded) to `/images/<paper_id>/<basename>` when that file exists locally; the emitted basename stays percent-encoded (decoded by `_materialize_local_image` at upload and by the `/images` mount), fenced code blocks are skipped, and it runs before the remote-vs-local summary comparison (no churn-only pulls) and on remote-only imports
+- page/block writes (`create_page` POST, `update_page` PATCH, `append_blocks`, block archiving, `set_archived`) pass `_NOTION_WRITE_TIMEOUT` (120s); reads keep the 60s default
+- sync errors are formatted with `describe_exception` (`str(exc) or repr(exc)`) at every surface (pipeline `notion_error`, web sync routes, CLI `notion-sync`, audio-upload warning) — `httpx.ReadTimeout` stringifies to `""` and must never surface as an empty error; the pipeline appends a hint that the write may have landed
+- a timeout *after* a successful page create can leave `notion_page_id` unset locally; the next sync matches by `arxiv_id`/`source_slug`, so no duplicate page is created
 - inline Markdown links degrade gracefully: `_safe_inline_link_url` keeps only absolute `http(s)`/`mailto:` targets; non-resolvable ones (`#` anchors, relative paths) render as plain text so a single bad link never aborts the sync (invariants 7, 8). The shared summary prompt also forbids placeholder/relative links at generation time.
 - data-source resolution (invariant 8d): `_ensure_data_source_id` resolves+caches `data_sources[0].id`; schema/query/page-parent use `data_source_id`, not `database_id`; missing data sources raises a clear error
 
@@ -235,9 +248,11 @@ pytest tests/
 Target files:
 - `tests/test_storage.py` — index/path invariants (including transcript round-trip + cleanup)
 - `tests/test_summarizer.py` — section parsing + `normalize_summary_body` (header strip gated on the generated wrapper's *shape* via `_looks_like_generated_header`: strips long many-author headers, but preserves wrapper-less YAML bodies whose real `---` section rules come later)
-- `tests/test_web_*.py` — route contracts
-- `tests/test_cli_*.py` — command behavior
-- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + inline link sanitization (`_safe_inline_link_url`: anchor/relative→plain text, mailto/http preserved) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
+- `tests/test_web.py` + `tests/test_web_*.py` — route contracts
+- `tests/test_cli_*.py` — command behavior (`test_cli_create.py` covers the script-file/json/cleanup flags + JSON-mode stdout purity; `test_cli_list.py` covers `list --json`; `test_cli_show.py` covers `show --body`)
+- `tests/test_pipeline_create.py` — `create_local_entry` script-file plumbing + slug dedupe
+- `tests/test_models.py`, `tests/test_bundle.py`, `tests/test_hf_papers.py` — model fields, portable bundles, HF metadata
+- `tests/test_notion.py` — sync conflict/merge rules + image block round-trip + local-figure file_upload path (`_looks_like_local_image_path`, `_resolve_image_uploads`: success/dedupe/missing/disabled/failure/traversal/recursion) + pull-side image-ref restoration (`_restore_local_image_refs`, churn no-op, pull rewrite) + write timeouts + `describe_exception` + inline link sanitization (`_safe_inline_link_url`: anchor/relative→plain text, mailto/http preserved) + data-source migration (`_ensure_data_source_id` resolve/cache/raise, schema via `/data_sources/{id}`, query endpoint, `create_page` parent shape)
 - `tests/test_search.py` — SearchManager, search doc generation, degraded behavior
 - `tests/test_tts.py` — backend factory, chunking, `prepare_*_for_tts` helpers
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)

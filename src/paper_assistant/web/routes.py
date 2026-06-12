@@ -631,7 +631,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
     @router.get("/api/notion/sync/preview")
     async def api_notion_sync_preview(paper: str | None = None):
         """Preview Notion sync actions without writing changes."""
-        from paper_assistant.notion import sync_notion
+        from paper_assistant.notion import describe_exception, sync_notion
 
         try:
             report = await sync_notion(
@@ -642,12 +642,12 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
             )
             return {"status": "ok", "report": report.to_dict()}
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": describe_exception(e)}
 
     @router.post("/api/notion/sync")
     async def api_notion_sync(req: NotionSyncRequest | None = None):
         """Run Notion sync manually."""
-        from paper_assistant.notion import sync_notion
+        from paper_assistant.notion import describe_exception, sync_notion
 
         payload = req or NotionSyncRequest()
         try:
@@ -664,7 +664,7 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                     logger.warning("Search index batch update failed after Notion sync")
             return {"status": "ok", "report": report.to_dict()}
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": describe_exception(e)}
 
     @router.get("/api/paper/{paper_id:path}/summary")
     async def api_get_summary(paper_id: str):

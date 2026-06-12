@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 import mistune
@@ -36,6 +37,19 @@ _LOCAL_UPLOAD_SENTINEL = "_pa_local_upload"
 _UPLOAD_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
 # Notion single-part file upload accepts files up to 20 MiB.
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Page/block writes can carry hundreds of blocks; 60s (the read default) can
+# elapse *after* the write lands server-side, surfacing a phantom failure.
+# Matches the timeout already used by ``_upload_file``.
+_NOTION_WRITE_TIMEOUT = 120.0
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Human-readable message for ``exc`` — ``repr`` when ``str`` is empty.
+
+    Several httpx exceptions (``ReadTimeout`` among them) stringify to ``""``,
+    which previously surfaced as ``notion_error: ""`` on a failed sync.
+    """
+    return str(exc).strip() or repr(exc)
 
 # Notion's supported code block language values.
 NOTION_LANGUAGES: set[str] = {
@@ -219,10 +233,10 @@ _CODE_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 
 
 def _iter_lines_with_fence_state(md: str) -> Iterator[tuple[str, bool]]:
-    """Yield ``(line, in_table_row)`` pairs, tracking fenced code block state.
+    """Yield ``(line, in_fence)`` pairs, tracking fenced code block state.
 
-    A line is considered a table row when it starts with ``|`` and is NOT
-    inside a fenced code block (``` or ~~~).
+    ``in_fence`` is True while inside a fenced code block (``` or ~~~),
+    including the fence delimiter lines themselves.
     """
     in_fence = False
     fence_marker = ""
@@ -232,11 +246,19 @@ def _iter_lines_with_fence_state(md: str) -> Iterator[tuple[str, bool]]:
             if not in_fence:
                 in_fence = True
                 fence_marker = m.group(1)[0] * len(m.group(1))
-            elif line.lstrip().startswith(fence_marker) and line.strip() == fence_marker:
+                yield line, True
+                continue
+            if line.lstrip().startswith(fence_marker) and line.strip() == fence_marker:
                 in_fence = False
                 fence_marker = ""
-        is_table = not in_fence and line.lstrip().startswith("|")
-        yield line, is_table
+                yield line, True
+                continue
+        yield line, in_fence
+
+
+def _is_table_row(line: str, in_fence: bool) -> bool:
+    """True for a table row line outside fenced code blocks."""
+    return not in_fence and line.lstrip().startswith("|")
 
 
 def _escape_math_pipes_in_tables(md: str) -> str:
@@ -245,8 +267,8 @@ def _escape_math_pipes_in_tables(md: str) -> str:
     Lines inside fenced code blocks are left untouched.
     """
     result: list[str] = []
-    for line, is_table in _iter_lines_with_fence_state(md):
-        if is_table:
+    for line, in_fence in _iter_lines_with_fence_state(md):
+        if _is_table_row(line, in_fence):
             line = re.sub(
                 r"\$([^$]+?)\$",
                 lambda m: "$" + m.group(1).replace("|", "\\vert ") + "$",
@@ -266,8 +288,8 @@ def _normalise_display_math(md: str) -> str:
     Lines inside fenced code blocks are left untouched.
     """
     processed: list[str] = []
-    for line, is_table in _iter_lines_with_fence_state(md):
-        if is_table:
+    for line, in_fence in _iter_lines_with_fence_state(md):
+        if _is_table_row(line, in_fence):
             processed.append(re.sub(r"\$\$\s*(.+?)\s*\$\$", r"$\1$", line))
         else:
             processed.append(line)
@@ -423,6 +445,74 @@ def _looks_like_local_image_path(url: str) -> bool:
     path_part = low.split("?", 1)[0].split("#", 1)[0]
     ext = path_part.rsplit(".", 1)[-1] if "." in path_part else ""
     return ext in _UPLOAD_IMAGE_EXTS
+
+
+# Alt text tolerates escaped characters and one level of nested brackets
+# (e.g. citations or "[CLS]" in figure captions round-tripped from Notion).
+_MD_IMAGE_RE = re.compile(r"(!\[(?:[^\[\]\\]|\\.|\[[^\[\]]*\])*\]\()([^)\s]+)(\))")
+
+
+def _is_notion_hosted_file_url(url: str) -> bool:
+    """True for a presigned Notion-hosted file URL.
+
+    Matches the known Notion file-storage forms — the ``prod-files-secure``
+    S3 bucket, the legacy path-style ``secure.notion-static.com`` bucket, and
+    ``*.notion.so`` — combined with AWS presigning params (``X-Amz-``).
+    Third-party presigned S3 URLs are deliberately excluded so a pull never
+    rewrites an externally hosted image; if Notion adds a new storage form,
+    restoration simply no-ops and the presigned URL is kept (safe degrade).
+    """
+    if not _is_absolute_http_url(url):
+        return False
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    notion_host = (
+        host == "notion.so"
+        or host.endswith(".notion.so")
+        or (
+            host.endswith(".amazonaws.com")
+            and (
+                host.startswith("prod-files-secure.")
+                or "notion-static" in parts.path.lower()
+            )
+        )
+    )
+    return notion_host and "X-Amz-" in parts.query
+
+
+def _restore_local_image_refs(markdown: str, *, paper_id: str, images_dir: Path) -> str:
+    """Rewrite expiring Notion-hosted image URLs back to local ``/images`` refs.
+
+    Notion serves uploaded ``file``-type image blocks through presigned S3 URLs
+    that expire (~1h), so pulling them verbatim into the canonical local summary
+    would leave dead links behind (and re-push them as dead external images).
+    For each markdown image whose URL is Notion-hosted presigned, if
+    ``images_dir/<paper_id>/<basename>`` exists on disk the ref is rewritten to
+    the stable ``/images/<paper_id>/<basename>`` form the push side uploads from
+    (invariant 5e). The emitted basename is percent-encoded so the ref stays
+    valid Markdown (decoded again at upload time by ``_materialize_local_image``
+    and by the web UI's ``/images`` mount). Lines inside fenced code blocks and
+    unmatched URLs are left untouched. Never raises.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        url = match.group(2)
+        if not _is_notion_hosted_file_url(url):
+            return match.group(0)
+        basename = Path(unquote(urlsplit(url).path)).name
+        if not basename:
+            return match.group(0)
+        try:
+            if not (images_dir / paper_id / basename).is_file():
+                return match.group(0)
+        except OSError:
+            return match.group(0)
+        return f"{match.group(1)}/images/{paper_id}/{quote(basename)}{match.group(3)}"
+
+    restored: list[str] = []
+    for line, in_fence in _iter_lines_with_fence_state(markdown):
+        restored.append(line if in_fence else _MD_IMAGE_RE.sub(_replace, line))
+    return "\n".join(restored)
 
 
 def _image_fallback_text(alt_text: str, url: str) -> str:
@@ -1285,7 +1375,9 @@ class NotionClient:
                 source_url=paper.metadata.source_url,
             ),
         }
-        page = await self._request("POST", "/pages", json_payload=payload)
+        page = await self._request(
+            "POST", "/pages", json_payload=payload, timeout=_NOTION_WRITE_TIMEOUT
+        )
 
         page_id = page["id"]
         await self._append_blocks_tree(page_id, blocks)
@@ -1323,7 +1415,12 @@ class NotionClient:
             ),
             "archived": archived,
         }
-        await self._request("PATCH", f"/pages/{page_id}", json_payload=payload)
+        await self._request(
+            "PATCH",
+            f"/pages/{page_id}",
+            json_payload=payload,
+            timeout=_NOTION_WRITE_TIMEOUT,
+        )
 
         blocks = _markdown_to_blocks(summary_markdown)
         await self._resolve_image_uploads(
@@ -1342,6 +1439,7 @@ class NotionClient:
             "PATCH",
             f"/blocks/{page_id}/children",
             json_payload={"children": blocks},
+            timeout=_NOTION_WRITE_TIMEOUT,
         )
         return data.get("results", [])
 
@@ -1415,7 +1513,12 @@ class NotionClient:
         for block in existing:
             block_id = block.get("id")
             if block_id:
-                await self._request("PATCH", f"/blocks/{block_id}", json_payload={"archived": True})
+                await self._request(
+                    "PATCH",
+                    f"/blocks/{block_id}",
+                    json_payload={"archived": True},
+                    timeout=_NOTION_WRITE_TIMEOUT,
+                )
 
         await self._append_blocks_tree(page_id, new_blocks)
 
@@ -1426,6 +1529,7 @@ class NotionClient:
             "PATCH",
             f"/pages/{page_id}",
             json_payload={"archived": archived, "properties": {archived_key: {"checkbox": archived}}},
+            timeout=_NOTION_WRITE_TIMEOUT,
         )
 
     async def attach_audio(self, page_id: str, audio_path: Path) -> None:
@@ -1546,7 +1650,9 @@ class NotionClient:
             return
 
         try:
-            resolved = (base / path_str.lstrip("/")).resolve()
+            # Refs may carry percent-encoded basenames (e.g. written by
+            # _restore_local_image_refs); decode before touching the filesystem.
+            resolved = (base / unquote(path_str).lstrip("/")).resolve()
             within_base = resolved == base or base in resolved.parents
             if (
                 not within_base
@@ -1651,7 +1757,7 @@ async def _push_local_to_notion(
             await client.attach_audio(remote_after.page_id, audio_path)
         except Exception as exc:
             report.warnings.append(
-                f"Audio upload failed for {pid}: {exc}"
+                f"Audio upload failed for {pid}: {describe_exception(exc)}"
             )
 
 
@@ -1670,9 +1776,13 @@ def _set_local_from_remote(
 
     pid = paper.metadata.paper_id
 
-    # Summary
+    # Summary. Restore stable local /images refs before comparing, so that
+    # presigned-URL churn from Notion-hosted figure uploads never registers as
+    # a remote change (and a real pull keeps the local refs, not dead links).
     local_summary = _load_local_summary_markdown(config, paper)
-    remote_summary = remote.summary_markdown.strip()
+    remote_summary = _restore_local_image_refs(
+        remote.summary_markdown, paper_id=pid, images_dir=config.images_dir
+    ).strip()
     if remote_summary and remote_summary != local_summary:
         report.actions.append(f"pull remote summary->{pid}")
         if not dry_run:
@@ -1797,11 +1907,14 @@ async def _import_remote_only(
     )
     storage.add_paper(paper)
 
-    if remote.summary_markdown.strip():
-        sections = parse_summary_sections(remote.summary_markdown)
+    remote_summary = _restore_local_image_refs(
+        remote.summary_markdown, paper_id=rid, images_dir=config.images_dir
+    )
+    if remote_summary.strip():
+        sections = parse_summary_sections(remote_summary)
         one_pager = find_one_pager(sections)
         summary_result = SummarizationResult(
-            full_markdown=remote.summary_markdown,
+            full_markdown=remote_summary,
             one_pager=one_pager,
             sections=sections,
             model_used="manual",
