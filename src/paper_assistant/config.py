@@ -47,14 +47,14 @@ class Config(BaseModel):
     qmd_collection_name: str = "papers"
 
     # TTS backend + MLX settings
-    tts_backend: str = "mlx"  # "mlx" | "edge"
+    tts_backend: str = "edge"  # "edge" | "mlx"
     mlx_tts_url: str = "http://127.0.0.1:8000"
     mlx_tts_model: str = "Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
     mlx_tts_voice: str | None = "ryan"
     mlx_tts_speaker: str | None = None
     mlx_tts_api_key: str | None = None
     mlx_tts_timeout_s: float = 120.0
-    mlx_tts_chunk_chars: int = 2000
+    mlx_tts_chunk_chars: int = 500
     mlx_tts_max_input_chars: int = 6000
     mlx_tts_speed: float = 1.0
     tts_edge_fallback: bool = True

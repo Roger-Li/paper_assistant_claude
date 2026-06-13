@@ -73,23 +73,33 @@ For user-facing setup and usage, see [README.md](README.md).
    same pair as `--script-file`/`--no-script-fallback` (plus `--json` and
    `--cleanup-file` with skill-import semantics; failures now exit non-zero),
    plumbed through `pipeline.create_local_entry`.
-   Backends raise typed errors (`MlxConfigError`, `MlxTransientError`, `EdgeTTSError`,
-   `FfmpegMissingError`); the helper converts them to warnings so import flows
-   degrade gracefully (invariant 7).
+   Backends raise typed errors (`MlxConfigError`, `MlxTransientError`,
+   `MlxQualityError`, `EdgeTTSError`, `FfmpegMissingError`); the helper converts
+   them to warnings so import flows degrade gracefully (invariant 7). Backend
+   output is synthesized to a sibling temporary file and atomically replaces the
+   final MP3 only after success, preserving existing audio on failed regeneration.
 
-5c. **Primary TTS backend is local MLX; edge-tts is graceful fallback.**
-   `config.tts_backend` defaults to `"mlx"` and targets an OpenAI-compatible
-   `/v1/audio/speech` endpoint at `config.mlx_tts_url`. `MlxTransientError`
-   triggers edge fallback when `tts_edge_fallback` is set; `MlxConfigError`
-   (4xx responses) does NOT fall back — the warning surfaces the misconfiguration.
+5c. **Primary TTS backend is edge-tts; local MLX is opt-in.**
+   `config.tts_backend` defaults to `"edge"` for reliable long-form narration.
+   Setting `PAPER_ASSIST_TTS_BACKEND=mlx` targets the OpenAI-compatible
+   `/v1/audio/speech` endpoint at `config.mlx_tts_url`. On the MLX path,
+   `MlxTransientError` and `MlxQualityError` trigger edge fallback when
+   `tts_edge_fallback` is set; `MlxConfigError` (4xx responses) does NOT fall
+   back — the warning surfaces the misconfiguration.
    `mlx_tts_model` defaults to `Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit`.
    `mlx_tts_voice` is the generic MLX/OpenAI-style selector and is the main
    stable voice pin for the current oMLX Qwen3-TTS CustomVoice server and defaults
    to `ryan`. `mlx_tts_speaker` is only a
    best-effort model-specific selector for backends that explicitly support a
    separate `speaker` field; some OpenAI-compatible servers ignore it.
-   ffmpeg is recommended (`brew install ffmpeg`) for long-paper multi-chunk MP3
-   concatenation on the MLX path.
+   MLX uses sentence-aware chunks of at most 500 characters. Every chunk is
+   decoded, trimmed to about 200 ms of trailing padding, and rejected when its
+   nonsilent duration implies speech faster than 270 WPM, when trimmed audio is
+   more than 45% silent, or when it contains an internal silent gap longer than
+   5 seconds. A rejected chunk is retried once at half size before edge fallback.
+   `paper-assist tts check` validates both short and medium probes using the same
+   metrics. ffmpeg is required (`brew install ffmpeg`) for MLX validation,
+   concatenation, and MP3 encoding.
 
 5d. **`normalize_summary_body()` is the single source of truth** for stripping
    YAML front matter + the duplicated title/metadata header from stored summaries.

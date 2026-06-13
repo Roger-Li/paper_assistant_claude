@@ -14,6 +14,8 @@ misconfiguration is visible.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -25,6 +27,7 @@ from paper_assistant.tts import (
     EdgeTTSError,
     FfmpegMissingError,
     MlxConfigError,
+    MlxQualityError,
     MlxTransientError,
     TTSBackendError,
     get_edge_backend,
@@ -205,13 +208,22 @@ async def _synthesize_with_fallback(
     primary_name = primary.name
 
     try:
-        await primary.synthesize(text, audio_path)
+        await _synthesize_to_temporary_path(primary, text, audio_path)
         return primary_name  # type: ignore[return-value]
     except MlxConfigError as exc:
         warnings.append(
             f"MLX TTS rejected the request ({exc}); fix config and retry."
             " Audio skipped to avoid masking the misconfiguration."
         )
+        return None
+    except MlxQualityError as exc:
+        if primary_name == "mlx" and config.tts_edge_fallback:
+            warnings.append(
+                f"MLX TTS output failed quality validation ({exc}); "
+                "falling back to edge-tts."
+            )
+            return await _try_edge(config, text, audio_path, warnings)
+        warnings.append(f"MLX TTS output failed quality validation ({exc}); audio skipped.")
         return None
     except (MlxTransientError, FfmpegMissingError) as exc:
         if primary_name == "mlx" and config.tts_edge_fallback:
@@ -236,7 +248,7 @@ async def _try_edge(
 ) -> Literal["mlx", "edge"] | None:
     backend = get_edge_backend(config)
     try:
-        await backend.synthesize(text, audio_path)
+        await _synthesize_to_temporary_path(backend, text, audio_path)
         return "edge"
     except EdgeTTSError as exc:
         warnings.append(f"edge-tts fallback also failed ({exc}); audio skipped.")
@@ -245,3 +257,24 @@ async def _try_edge(
         logger.exception("Unexpected edge-tts failure during fallback")
         warnings.append(f"edge-tts fallback failed unexpectedly ({exc}); audio skipped.")
         return None
+
+
+async def _synthesize_to_temporary_path(backend, text: str, audio_path: Path) -> None:
+    """Publish backend output atomically so failed regeneration keeps old audio."""
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=audio_path.parent,
+            prefix=f".{audio_path.stem}.",
+            suffix=".mp3",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+        await backend.synthesize(text, temp_path)
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise TTSBackendError(f"{backend.name} produced no audio data.")
+        os.replace(temp_path, audio_path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()

@@ -1,14 +1,17 @@
 """Text-to-speech backends and shared preparation helpers.
 
-Primary backend is a local MLX server exposing the OpenAI-compatible
-``/v1/audio/speech`` endpoint. edge-tts is kept as a graceful fallback.
+edge-tts is the reliable default. A local MLX server exposing the
+OpenAI-compatible ``/v1/audio/speech`` endpoint remains available as an
+explicit opt-in backend with edge-tts quality fallback.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -36,12 +39,138 @@ class MlxConfigError(TTSBackendError):
     """MLX returned a 4xx. Indicates misconfiguration — do not silently fall back."""
 
 
+class MlxQualityError(TTSBackendError):
+    """MLX returned audio that is silent, truncated, or otherwise unusable."""
+
+
 class EdgeTTSError(TTSBackendError):
     """edge-tts failed to synthesize."""
 
 
 class FfmpegMissingError(TTSBackendError):
     """ffmpeg is required for the current operation but not installed."""
+
+
+# Audio quality ----------------------------------------------------------------
+
+
+_SILENCE_THRESHOLD_DBFS = -45
+_MIN_SILENCE_MS = 500
+_TRAILING_PADDING_MS = 200
+_MAX_SPEECH_WPM = 270.0
+_MAX_SILENCE_RATIO = 0.45
+_MAX_INTERNAL_SILENCE_MS = 5000
+
+
+@dataclass(frozen=True)
+class AudioQualityMetrics:
+    duration_ms: int
+    nonsilent_ms: int
+    trailing_silence_ms: int
+    max_internal_silence_ms: int
+    word_count: int
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.duration_ms / 1000
+
+    @property
+    def nonsilent_seconds(self) -> float:
+        return self.nonsilent_ms / 1000
+
+    @property
+    def trailing_silence_seconds(self) -> float:
+        return self.trailing_silence_ms / 1000
+
+    @property
+    def silence_ratio(self) -> float:
+        if self.duration_ms <= 0:
+            return 1.0
+        return max(0.0, 1.0 - (self.nonsilent_ms / self.duration_ms))
+
+    @property
+    def estimated_wpm(self) -> float:
+        if self.nonsilent_ms <= 0:
+            return float("inf")
+        return self.word_count * 60_000 / self.nonsilent_ms
+
+
+def analyze_audio_segment(segment, text: str) -> AudioQualityMetrics:
+    """Measure speech activity using the same threshold as the audio audit."""
+    from pydub.silence import detect_nonsilent
+
+    ranges = detect_nonsilent(
+        segment,
+        min_silence_len=_MIN_SILENCE_MS,
+        silence_thresh=_SILENCE_THRESHOLD_DBFS,
+        seek_step=10,
+    )
+    nonsilent_ms = sum(end - start for start, end in ranges)
+    trailing_silence_ms = len(segment) - ranges[-1][1] if ranges else len(segment)
+    internal_silences = [
+        next_start - current_end
+        for (_, current_end), (next_start, _) in zip(ranges, ranges[1:])
+    ]
+    word_count = len(re.findall(r"\b[\w'-]+\b", text))
+    return AudioQualityMetrics(
+        duration_ms=len(segment),
+        nonsilent_ms=nonsilent_ms,
+        trailing_silence_ms=trailing_silence_ms,
+        max_internal_silence_ms=max(internal_silences, default=0),
+        word_count=word_count,
+    )
+
+
+def analyze_audio_file(audio_path: Path, text: str) -> AudioQualityMetrics:
+    """Decode an audio file and return speech-quality metrics."""
+    from pydub import AudioSegment
+
+    return analyze_audio_segment(AudioSegment.from_file(audio_path), text)
+
+
+def raise_for_audio_quality(
+    metrics: AudioQualityMetrics,
+    *,
+    context: str = "MLX TTS audio",
+    check_excessive_silence: bool = True,
+) -> None:
+    """Reject silent output or speech too short to plausibly cover the input."""
+    if metrics.nonsilent_ms <= 0:
+        raise MlxQualityError(f"{context} contains no speech above -45 dBFS.")
+    if metrics.word_count and metrics.estimated_wpm > _MAX_SPEECH_WPM:
+        raise MlxQualityError(
+            f"{context} is likely truncated: {metrics.word_count} words but only "
+            f"{metrics.nonsilent_seconds:.1f}s of speech "
+            f"({metrics.estimated_wpm:.0f} estimated WPM; limit {_MAX_SPEECH_WPM:.0f})."
+        )
+    if check_excessive_silence and metrics.silence_ratio > _MAX_SILENCE_RATIO:
+        raise MlxQualityError(
+            f"{context} is mostly silent: {metrics.silence_ratio:.0%} silence "
+            f"(limit {_MAX_SILENCE_RATIO:.0%})."
+        )
+    if (
+        check_excessive_silence
+        and metrics.max_internal_silence_ms > _MAX_INTERNAL_SILENCE_MS
+    ):
+        raise MlxQualityError(
+            f"{context} contains a {metrics.max_internal_silence_ms / 1000:.1f}s "
+            f"internal silent gap (limit {_MAX_INTERNAL_SILENCE_MS / 1000:.1f}s)."
+        )
+
+
+def _trim_and_validate_segment(segment, text: str):
+    metrics = analyze_audio_segment(segment, text)
+    # Validate narration coverage before trimming, but allow removable trailing
+    # silence to exceed the final silence limits.
+    raise_for_audio_quality(metrics, check_excessive_silence=False)
+    trim_at = min(
+        len(segment),
+        len(segment) - metrics.trailing_silence_ms + _TRAILING_PADDING_MS,
+    )
+    trimmed = segment[:trim_at]
+    trimmed_metrics = analyze_audio_segment(trimmed, text)
+    raise_for_audio_quality(trimmed_metrics)
+    return trimmed
 
 
 # Preparation helpers ----------------------------------------------------------
@@ -265,7 +394,7 @@ class MlxTTSBackend:
     api_key: str | None = None
     speed: float = 1.0
     timeout_s: float = 120.0
-    chunk_chars: int = 2000
+    chunk_chars: int = 500
     max_input_chars: int = 6000
     response_format: str = "wav"
     name: str = "mlx"
@@ -287,38 +416,78 @@ class MlxTTSBackend:
         text = text.strip()
         if not text:
             raise MlxConfigError("MLX TTS input is empty after preparation.")
+        if not self._ffmpeg_available:
+            raise FfmpegMissingError(
+                "ffmpeg is required to validate, trim, and encode MLX audio. "
+                "Install with `brew install ffmpeg` or set PAPER_ASSIST_TTS_BACKEND=edge."
+            )
 
         chunks = split_into_chunks(text, self.chunk_chars)
         if not chunks:
             raise MlxConfigError("MLX TTS produced zero chunks.")
 
-        if len(chunks) == 1:
-            audio_bytes, content_type = await self._synthesize_single(chunks[0])
-            self._write_output(audio_bytes, content_type, output_path, AudioSegment)
-            return output_path
-
-        if not self._ffmpeg_available:
-            if len(text) <= self.max_input_chars:
-                audio_bytes, content_type = await self._synthesize_single(text)
-                self._write_output(audio_bytes, content_type, output_path, AudioSegment)
-                return output_path
-            raise FfmpegMissingError(
-                "ffmpeg is required to concatenate multi-chunk MLX audio. "
-                "Install with `brew install ffmpeg` or reduce input length."
-            )
-
         segments: list[AudioSegment] = []
-        for chunk in chunks:
-            audio_bytes, content_type = await self._synthesize_single(chunk)
-            segments.append(self._decode_segment(audio_bytes, content_type, AudioSegment))
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            try:
+                segments.append(await self._synthesize_validated_chunk(chunk, AudioSegment))
+            except MlxQualityError as initial_exc:
+                retry_limit = max(120, self.chunk_chars // 2)
+                retry_chunks = split_into_chunks(chunk, retry_limit)
+                if len(retry_chunks) <= 1:
+                    raise MlxQualityError(
+                        f"MLX chunk {chunk_index}/{len(chunks)} failed quality validation "
+                        f"and could not be split further: {initial_exc}"
+                    ) from initial_exc
+
+                retry_segments: list[AudioSegment] = []
+                try:
+                    for retry_chunk in retry_chunks:
+                        retry_segments.append(
+                            await self._synthesize_validated_chunk(
+                                retry_chunk,
+                                AudioSegment,
+                            )
+                        )
+                except MlxQualityError as retry_exc:
+                    raise MlxQualityError(
+                        f"MLX chunk {chunk_index}/{len(chunks)} remained unusable after "
+                        f"one smaller-chunk retry: {retry_exc}"
+                    ) from retry_exc
+                segments.extend(retry_segments)
 
         combined = segments[0]
         for seg in segments[1:]:
             combined += seg
 
+        final_metrics = analyze_audio_segment(combined, text)
+        raise_for_audio_quality(final_metrics, context="Combined MLX TTS audio")
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.export(str(output_path), format="mp3")
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=output_path.parent,
+                prefix=f".{output_path.stem}.",
+                suffix=".mp3",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+            combined.export(str(temp_path), format="mp3")
+            os.replace(temp_path, output_path)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
         return output_path
+
+    async def _synthesize_validated_chunk(self, chunk: str, AudioSegment):
+        audio_bytes, content_type = await self._synthesize_single(chunk)
+        try:
+            segment = self._decode_segment(audio_bytes, content_type, AudioSegment)
+        except Exception as exc:
+            raise MlxQualityError(
+                "MLX TTS returned audio that could not be decoded."
+            ) from exc
+        return _trim_and_validate_segment(segment, chunk)
 
     async def _synthesize_single(self, chunk: str) -> tuple[bytes, str]:
         payload = self._build_payload(chunk)
@@ -371,29 +540,6 @@ class MlxTTSBackend:
 
     def _uses_model_specific_speaker(self) -> bool:
         return "qwen3-tts" in self.model.lower()
-
-    def _write_output(
-        self,
-        audio_bytes: bytes,
-        content_type: str,
-        output_path: Path,
-        AudioSegment,
-    ) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._is_mp3(content_type, audio_bytes):
-            output_path.write_bytes(audio_bytes)
-            return
-
-        if not self._ffmpeg_available:
-            raise FfmpegMissingError(
-                "ffmpeg is required to transcode MLX output "
-                f"(content-type={content_type or 'unknown'}) to MP3. "
-                "Install with `brew install ffmpeg` or set "
-                "PAPER_ASSIST_TTS_BACKEND=edge."
-            )
-
-        segment = self._decode_segment(audio_bytes, content_type, AudioSegment)
-        segment.export(str(output_path), format="mp3")
 
     @staticmethod
     def _is_mp3(content_type: str, audio_bytes: bytes) -> bool:

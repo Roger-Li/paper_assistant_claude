@@ -302,6 +302,93 @@ async def test_mlx_transient_falls_back_to_edge(config, storage):
 
 
 @pytest.mark.asyncio
+async def test_mlx_quality_failure_falls_back_to_edge(config, storage):
+    paper = _paper()
+    storage.add_paper(paper)
+
+    with (
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_primary,
+        patch("paper_assistant.audio_assets.get_edge_backend") as get_edge,
+    ):
+        from paper_assistant.tts import MlxQualityError
+
+        primary = AsyncMock()
+        primary.name = "mlx"
+        primary.synthesize.side_effect = MlxQualityError("truncated")
+        get_primary.return_value = primary
+
+        edge = AsyncMock()
+        edge.name = "edge"
+        edge.synthesize.side_effect = _fake_mlx_backend(
+            config.audio_dir / "2503.10291.mp3"
+        )
+        get_edge.return_value = edge
+
+        result = await render_audio_assets(
+            config=config,
+            storage=storage,
+            paper=paper,
+            source_markdown="# One-Pager\nRaw body",
+            skip_transcript=True,
+            skip_audio=False,
+        )
+
+    assert result.backend_used == "edge"
+    assert result.audio_path is not None
+    assert any("truncated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_failed_regeneration_preserves_existing_audio(config, storage):
+    paper = _paper()
+    storage.add_paper(paper)
+    existing = storage.get_paper(paper.metadata.paper_id)
+    existing.audio_path = "audio/2503.10291.mp3"
+    storage.add_paper(existing)
+    audio_path = config.data_dir / existing.audio_path
+    audio_path.write_bytes(b"existing-audio")
+
+    async def fail_after_partial_write(_text: str, out_path: Path):
+        from paper_assistant.tts import MlxQualityError
+
+        out_path.write_bytes(b"partial-mlx")
+        raise MlxQualityError("truncated")
+
+    async def edge_fail_after_partial_write(_text: str, out_path: Path):
+        from paper_assistant.tts import EdgeTTSError
+
+        out_path.write_bytes(b"partial-edge")
+        raise EdgeTTSError("offline")
+
+    with (
+        patch("paper_assistant.audio_assets.get_tts_backend") as get_primary,
+        patch("paper_assistant.audio_assets.get_edge_backend") as get_edge,
+    ):
+        primary = AsyncMock()
+        primary.name = "mlx"
+        primary.synthesize.side_effect = fail_after_partial_write
+        get_primary.return_value = primary
+
+        edge = AsyncMock()
+        edge.name = "edge"
+        edge.synthesize.side_effect = edge_fail_after_partial_write
+        get_edge.return_value = edge
+
+        result = await render_audio_assets(
+            config=config,
+            storage=storage,
+            paper=existing,
+            source_markdown="# One-Pager\nRaw body",
+            skip_transcript=True,
+            skip_audio=False,
+        )
+
+    assert result.backend_used is None
+    assert result.audio_path == audio_path
+    assert audio_path.read_bytes() == b"existing-audio"
+
+
+@pytest.mark.asyncio
 async def test_mlx_config_error_suppresses_fallback(config, storage):
     paper = _paper()
     storage.add_paper(paper)

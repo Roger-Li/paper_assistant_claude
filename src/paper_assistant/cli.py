@@ -1761,10 +1761,13 @@ async def _tts_check(obj: dict) -> None:
     from paper_assistant.tts import (
         EdgeTTSError,
         MlxConfigError,
+        MlxQualityError,
         MlxTransientError,
         TTSBackendError,
+        analyze_audio_file,
         get_edge_backend,
         get_tts_backend,
+        raise_for_audio_quality,
     )
 
     config = load_config(**obj)
@@ -1776,7 +1779,10 @@ async def _tts_check(obj: dict) -> None:
     if ffmpeg_path:
         console.print(f"  ffmpeg: [green]present[/green] ({ffmpeg_path})")
     else:
-        console.print("  ffmpeg: [yellow]missing[/yellow] — long papers may fail to concat; `brew install ffmpeg`.")
+        console.print(
+            "  ffmpeg: [red]missing[/red] — MLX quality validation and encoding "
+            "require it; `brew install ffmpeg`."
+        )
 
     exit_code = 0
 
@@ -1809,52 +1815,106 @@ async def _tts_check(obj: dict) -> None:
             console.print(f"  [red]MLX /v1/models unreachable:[/red] {exc}")
             exit_code = 1
 
-    probe_path = config.audio_dir / "_tts_probe.mp3"
-    probe_text = "This is a one-sentence probe of the paper assistant text to speech pipeline."
-
     backend = get_tts_backend(config)
-    start = time.monotonic()
     primary_failed = False
-    try:
-        await backend.synthesize(probe_text, probe_path)
-        elapsed = time.monotonic() - start
-        size = probe_path.stat().st_size if probe_path.exists() else 0
-        console.print(
-            f"  Primary probe: [green]{backend.name}[/green] ok in {elapsed:.1f}s ({size} bytes)"
-        )
-    except MlxConfigError as exc:
-        console.print(f"  Primary probe: [red]{backend.name} config error[/red] — {exc}")
-        console.print("  Fix config and retry — fallback suppressed to keep the bug visible.")
-        exit_code = 1
-        primary_failed = True
-    except MlxTransientError as exc:
-        console.print(f"  Primary probe: [yellow]{backend.name} transient[/yellow] — {exc}")
-        primary_failed = True
-    except TTSBackendError as exc:
-        console.print(f"  Primary probe: [yellow]{backend.name} failed[/yellow] — {exc}")
-        primary_failed = True
-    except Exception as exc:
-        console.print(f"  Primary probe: [red]unexpected error[/red] — {exc}")
-        exit_code = 1
-        primary_failed = True
+    failed_probe_text = ""
+    probe_paths: list[Path] = []
+    short_probe = "This is a one-sentence probe of the paper assistant text to speech pipeline."
+    medium_probe = (
+        "Paper Assistant turns technical research summaries into clear spoken narration. "
+        "This medium-length diagnostic checks more than file creation: it verifies that "
+        "the local speech model covers the supplied words at a plausible speaking rate, "
+        "does not stop after only a few sentences, and does not pad the result with a long "
+        "silent tail. A healthy result should remain clearly audible throughout this "
+        "paragraph, with natural pauses between ideas and only a brief pause at the end. "
+        "The check deliberately resembles a real narration chunk because very short probes "
+        "can succeed even when longer requests produce mostly silence."
+    )
+    probe_specs = [("short", short_probe)]
+    if config.tts_backend == "mlx":
+        probe_specs.append(("medium", medium_probe))
+
+    for probe_label, probe_text in probe_specs:
+        probe_path = config.audio_dir / f"_tts_probe_{probe_label}.mp3"
+        probe_paths.append(probe_path)
+        start = time.monotonic()
+        try:
+            await backend.synthesize(probe_text, probe_path)
+            elapsed = time.monotonic() - start
+            size = probe_path.stat().st_size if probe_path.exists() else 0
+            if config.tts_backend == "mlx":
+                metrics = analyze_audio_file(probe_path, probe_text)
+                raise_for_audio_quality(
+                    metrics,
+                    context=f"MLX {probe_label} diagnostic",
+                )
+                console.print(
+                    f"  MLX {probe_label} probe: [green]ok[/green] in {elapsed:.1f}s "
+                    f"({size} bytes, {metrics.duration_seconds:.1f}s audio, "
+                    f"{metrics.trailing_silence_seconds:.1f}s trailing silence, "
+                    f"{metrics.estimated_wpm:.0f} estimated WPM)"
+                )
+            else:
+                console.print(
+                    f"  Primary probe: [green]{backend.name}[/green] ok in "
+                    f"{elapsed:.1f}s ({size} bytes)"
+                )
+        except MlxConfigError as exc:
+            console.print(
+                f"  MLX {probe_label} probe: [red]config error[/red] — {exc}"
+            )
+            console.print("  Fix config and retry — fallback suppressed to keep the bug visible.")
+            exit_code = 1
+            primary_failed = True
+        except MlxQualityError as exc:
+            console.print(
+                f"  MLX {probe_label} probe: [red]quality failure[/red] — {exc}"
+            )
+            exit_code = 1
+            primary_failed = True
+        except MlxTransientError as exc:
+            console.print(
+                f"  {probe_label.title()} probe: "
+                f"[yellow]{backend.name} transient[/yellow] — {exc}"
+            )
+            primary_failed = True
+        except TTSBackendError as exc:
+            console.print(
+                f"  {probe_label.title()} probe: "
+                f"[yellow]{backend.name} failed[/yellow] — {exc}"
+            )
+            primary_failed = True
+        except Exception as exc:
+            console.print(f"  {probe_label.title()} probe: [red]unexpected error[/red] — {exc}")
+            exit_code = 1
+            primary_failed = True
+
+        if primary_failed:
+            failed_probe_text = probe_text
+            break
 
     if primary_failed and config.tts_backend == "mlx" and config.tts_edge_fallback:
         edge = get_edge_backend(config)
+        fallback_path = config.audio_dir / "_tts_probe_fallback.mp3"
+        probe_paths.append(fallback_path)
         try:
             start = time.monotonic()
-            await edge.synthesize(probe_text, probe_path)
+            await edge.synthesize(failed_probe_text or short_probe, fallback_path)
             elapsed = time.monotonic() - start
-            size = probe_path.stat().st_size if probe_path.exists() else 0
+            size = fallback_path.stat().st_size if fallback_path.exists() else 0
             console.print(
                 f"  Fallback probe: [green]edge[/green] ok in {elapsed:.1f}s ({size} bytes)"
             )
         except EdgeTTSError as exc:
             console.print(f"  Fallback probe: [red]edge failed[/red] — {exc}")
             exit_code = 1
+    elif primary_failed:
+        exit_code = 1
 
-    if probe_path.exists():
+    for probe_path in probe_paths:
         try:
-            probe_path.unlink()
+            if probe_path.exists():
+                probe_path.unlink()
         except OSError:
             pass
 
