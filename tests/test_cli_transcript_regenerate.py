@@ -137,3 +137,92 @@ def test_tts_check_probes_backend(tmp_path):
     assert result.exit_code == 0, result.output
     assert "TTS backend" in result.output
     assert "edge" in result.output
+
+
+def test_tts_check_mlx_reports_short_and_medium_quality(tmp_path):
+    import httpx
+    from pydub.generators import Sine
+
+    runner = CliRunner()
+    env = {
+        "ANTHROPIC_API_KEY": "k",
+        "PAPER_ASSIST_DATA_DIR": str(tmp_path),
+        "PAPER_ASSIST_TTS_BACKEND": "mlx",
+    }
+
+    async def fake_get(self, url, headers=None):
+        return httpx.Response(200, json={"data": []})
+
+    async def healthy_synthesize(self, text: str, out_path: Path):
+        word_count = len(text.split())
+        duration_ms = max(1000, round(word_count * 60_000 / 180))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        Sine(440).to_audio_segment(duration=duration_ms).apply_gain(-12).export(
+            out_path,
+            format="mp3",
+        )
+        return out_path
+
+    with (
+        patch("httpx.AsyncClient.get", new=fake_get),
+        patch(
+            "paper_assistant.tts.MlxTTSBackend.synthesize",
+            new=healthy_synthesize,
+        ),
+    ):
+        result = runner.invoke(main, ["tts", "check"], env=env)
+
+    assert result.exit_code == 0, result.output
+    assert "MLX short probe" in result.output
+    assert "MLX medium probe" in result.output
+    assert "estimated WPM" in result.output
+
+
+def test_tts_check_mlx_rejects_semantically_truncated_audio(tmp_path):
+    import httpx
+    from pydub.generators import Sine
+
+    runner = CliRunner()
+    env = {
+        "ANTHROPIC_API_KEY": "k",
+        "PAPER_ASSIST_DATA_DIR": str(tmp_path),
+        "PAPER_ASSIST_TTS_BACKEND": "mlx",
+    }
+
+    async def fake_get(self, url, headers=None):
+        return httpx.Response(200, json={"data": []})
+
+    async def truncated_synthesize(self, text: str, out_path: Path):
+        word_count = len(text.split())
+        duration_ms = (
+            max(1000, round(word_count * 60_000 / 180))
+            if len(text) < 200
+            else 2000
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        Sine(440).to_audio_segment(duration=duration_ms).apply_gain(-12).export(
+            out_path,
+            format="mp3",
+        )
+        return out_path
+
+    async def fallback_synthesize(self, text: str, out_path: Path):
+        out_path.write_bytes(b"edge-probe")
+        return out_path
+
+    with (
+        patch("httpx.AsyncClient.get", new=fake_get),
+        patch(
+            "paper_assistant.tts.MlxTTSBackend.synthesize",
+            new=truncated_synthesize,
+        ),
+        patch(
+            "paper_assistant.tts.EdgeTTSBackend.synthesize",
+            new=fallback_synthesize,
+        ),
+    ):
+        result = runner.invoke(main, ["tts", "check"], env=env)
+
+    assert result.exit_code != 0
+    assert "quality failure" in result.output
+    assert "Fallback probe" in result.output

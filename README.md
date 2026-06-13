@@ -60,18 +60,18 @@ Configuration resolution order is:
 | `ANTHROPIC_API_KEY` | Yes | none | Required for summarization. |
 | `PAPER_ASSIST_DATA_DIR` | No | `~/.paper-assistant` | Overrides the full data root. |
 | `PAPER_ASSIST_MODEL` | No | `claude-sonnet-4-20250514` | Claude model used for summaries. |
-| `PAPER_ASSIST_TTS_VOICE` | No | `en-US-AriaNeural` | edge-tts voice (used when `TTS_BACKEND=edge` or as MLX fallback). |
-| `PAPER_ASSIST_TTS_BACKEND` | No | `mlx` | `mlx` (local server) or `edge` (cloud edge-tts). |
+| `PAPER_ASSIST_TTS_VOICE` | No | `en-US-AriaNeural` | edge-tts voice (used by the default backend and as MLX fallback). |
+| `PAPER_ASSIST_TTS_BACKEND` | No | `edge` | `edge` (cloud edge-tts) or `mlx` (opt-in local server). |
 | `PAPER_ASSIST_MLX_TTS_URL` | No | `http://127.0.0.1:8000` | OpenAI-compatible `/v1/audio/speech` endpoint. |
 | `PAPER_ASSIST_MLX_TTS_MODEL` | No | `Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit` | Model name sent to the MLX server. |
 | `PAPER_ASSIST_MLX_TTS_VOICE` | No | `ryan` | Generic MLX/OpenAI-style `voice` field. On the current oMLX `/v1/audio/speech` server, this is the main knob for Qwen3-TTS CustomVoice models and should be set to a supported voice ID. |
 | `PAPER_ASSIST_MLX_TTS_SPEAKER` | No | none | Optional model-specific selector forwarded as `speaker` when the backend/server supports it. Some OpenAI-compatible servers ignore this field and rely on `voice` only. |
 | `PAPER_ASSIST_MLX_TTS_API_KEY` | No | none | Bearer token forwarded to MLX if the server requires auth. |
 | `PAPER_ASSIST_MLX_TTS_TIMEOUT` | No | `120` | Per-request timeout in seconds. |
-| `PAPER_ASSIST_MLX_TTS_CHUNK_CHARS` | No | `2000` | Chunk size for multi-chunk synthesis. |
-| `PAPER_ASSIST_MLX_TTS_MAX_INPUT_CHARS` | No | `6000` | Max single-chunk size when ffmpeg is unavailable. |
+| `PAPER_ASSIST_MLX_TTS_CHUNK_CHARS` | No | `500` | Maximum sentence-aware chunk size. Smaller chunks reduce Qwen3-TTS truncation and silence failures. |
+| `PAPER_ASSIST_MLX_TTS_MAX_INPUT_CHARS` | No | `6000` | Legacy compatibility setting; quality-checked MLX synthesis always uses chunking. |
 | `PAPER_ASSIST_MLX_TTS_SPEED` | No | `1.0` | Playback speed forwarded to MLX. |
-| `PAPER_ASSIST_TTS_EDGE_FALLBACK` | No | `true` | Fall back to edge-tts when MLX fails with a transient error. |
+| `PAPER_ASSIST_TTS_EDGE_FALLBACK` | No | `true` | When MLX is selected, fall back to edge-tts if it is unavailable or returns silent/truncated audio. |
 | `PAPER_ASSIST_AUDIO_SCRIPT_MODEL` | No | `claude-haiku-4-5-20251001` | Claude model used to rewrite the stored summary into a spoken narration script. |
 | `PAPER_ASSIST_ARXIV_USER_AGENT` | No | `paper-assistant/0.1 (...)` | Set app name + contact email for arXiv API requests. |
 | `PAPER_ASSIST_ARXIV_MAX_RETRIES` | No | `6` | Retry attempts for arXiv `429`, `5xx`, and transient network errors. |
@@ -126,7 +126,7 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | `paper-assist notion-preflight` | Verify the configured Notion database is reachable/shared |
 | `paper-assist notion-sync` | Manual two-way sync with Notion (`--paper`, `--dry-run`) |
 | `paper-assist transcript regenerate <paper_id>` | Regenerate narration transcript + audio (`--model`, `--script-file`) |
-| `paper-assist tts check` | Probe the configured TTS backend (MLX + ffmpeg) and synthesize a one-sentence sample |
+| `paper-assist tts check` | Probe the configured backend; MLX adds short/medium speech-quality diagnostics |
 
 ## Common Workflows
 
@@ -257,12 +257,12 @@ search is enabled.
 
 ## Audio
 
-Paper Assistant generates audio in two stages: first, Claude rewrites the stored summary into a 5–8 minute narration script (saved to `transcripts/{paper_id}.md`); then, a local MLX TTS server synthesizes the script to MP3. edge-tts is kept as a graceful fallback.
+Paper Assistant generates audio in two stages: first, Claude rewrites the stored summary into a 5–8 minute narration script (saved to `transcripts/{paper_id}.md`); then, edge-tts synthesizes the script to MP3. edge-tts is the default because it has been more reliable for complete paper narrations. A quality-checked local MLX backend remains available as an explicit opt-in.
 
 ### Prerequisites
 
-- A local MLX TTS server exposing `POST /v1/audio/speech` (OpenAI-compatible) at the URL set via `PAPER_ASSIST_MLX_TTS_URL` (default `http://127.0.0.1:8000`).
-- `brew install ffmpeg` is recommended — long papers need ffmpeg to concatenate multi-chunk MP3s. Without it, the MLX backend falls back to a single large request if the total input fits in `PAPER_ASSIST_MLX_TTS_MAX_INPUT_CHARS`.
+- The default edge-tts backend requires network access.
+- MLX is optional. To use it, run a local server exposing `POST /v1/audio/speech` at `PAPER_ASSIST_MLX_TTS_URL` and install ffmpeg with `brew install ffmpeg`.
 
 ### Verify setup
 
@@ -270,7 +270,21 @@ Paper Assistant generates audio in two stages: first, Claude rewrites the stored
 paper-assist tts check
 ```
 
-This probes `/v1/models`, synthesizes a one-sentence sample, and reports timing/size/backend. For MLX, it also prints the generic `voice` and the optional model-specific `speaker` selector that the client would send. The command exits non-zero on configuration errors so CI can gate on it.
+With the default edge backend, this synthesizes a short connectivity sample. If
+MLX is explicitly selected, it also probes `/v1/models`, synthesizes short and
+medium-length samples, reports duration, trailing silence, and estimated words
+per minute, and exits non-zero when audio is silent or too short to plausibly
+cover the supplied text. This catches failures where the server returns HTTP 200
+and a non-empty file that contains mostly silence.
+
+MLX narration is generated in sentence-aware chunks of at most 500 characters.
+Each chunk is trimmed to about 200 ms of trailing padding and checked against its
+word count. After trimming, chunks with more than 45% silence or an internal
+silent gap longer than 5 seconds are also rejected. A suspicious chunk is
+retried once at half size; if it is still silent or truncated, the complete
+narration is regenerated with edge-tts when fallback is enabled. Audio is
+published atomically, so a failed regeneration does not overwrite an existing
+working MP3.
 
 ### Choosing MLX `voice` vs `speaker`
 
@@ -300,9 +314,18 @@ paper-assist transcript regenerate 2503.10291 --script-file my-script.md
 
 The web UI exposes the same operation via a "Regenerate transcript + audio" button on each paper detail page, and `POST /api/paper/{paper_id}/transcript/regenerate` accepts optional `{"model": ..., "script_markdown": ...}` in the JSON body.
 
-### Using edge-tts instead of MLX
+### Using local MLX instead of edge-tts
 
-Set `PAPER_ASSIST_TTS_BACKEND=edge` if you prefer edge-tts as the primary backend. MLX remains the default because it keeps audio generation local and avoids the cloud round-trip.
+edge-tts is the default. To keep narration local, explicitly select MLX:
+
+```bash
+export PAPER_ASSIST_TTS_BACKEND=mlx
+```
+
+MLX keeps narration text on the local machine, but its output is still
+quality-validated and falls back to edge-tts by default when audio is silent or
+truncated. Set `PAPER_ASSIST_TTS_EDGE_FALLBACK=false` only when narration text
+must never leave the machine.
 
 ## Skills
 
@@ -609,8 +632,10 @@ Use `--force` to merge a new import over the existing record. Re-import keeps th
 
 Possible causes:
 - You used `--skip-audio`
+- edge-tts could not reach its service
 - MLX TTS server unreachable or misconfigured (check with `paper-assist tts check`)
-- `ffmpeg` missing and the paper exceeded `PAPER_ASSIST_MLX_TTS_MAX_INPUT_CHARS`
+- MLX returned silent/truncated audio and edge fallback was disabled
+- `ffmpeg` is missing (`brew install ffmpeg`)
 - edge-tts fallback also failed (network issue)
 
 Feed can still generate without audio files. Re-run with audio enabled when needed:

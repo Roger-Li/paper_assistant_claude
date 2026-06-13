@@ -1,12 +1,17 @@
 """Tests for paper_assistant.tts text preparation and backend factory."""
 
+import pytest
+
 from paper_assistant.config import Config, load_config
 from paper_assistant.tts import (
+    AudioQualityMetrics,
     EdgeTTSBackend,
+    MlxQualityError,
     MlxTTSBackend,
     get_tts_backend,
     prepare_script_for_tts,
     prepare_text_for_tts,
+    raise_for_audio_quality,
     split_into_chunks,
 )
 
@@ -154,23 +159,26 @@ class TestGetTtsBackend:
 
         assert config.mlx_tts_model == "Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
         assert config.mlx_tts_voice == "ryan"
+        assert config.mlx_tts_chunk_chars == 500
 
-    def test_returns_mlx_by_default(self, tmp_path):
+    def test_returns_edge_by_default(self, tmp_path):
         config = Config(anthropic_api_key="k", data_dir=tmp_path)
+        backend = get_tts_backend(config)
+        assert config.tts_backend == "edge"
+        assert isinstance(backend, EdgeTTSBackend)
+        assert backend.name == "edge"
+
+    def test_returns_mlx_when_configured(self, tmp_path):
+        config = Config(anthropic_api_key="k", data_dir=tmp_path, tts_backend="mlx")
         backend = get_tts_backend(config)
         assert isinstance(backend, MlxTTSBackend)
         assert backend.name == "mlx"
-
-    def test_returns_edge_when_configured(self, tmp_path):
-        config = Config(anthropic_api_key="k", data_dir=tmp_path, tts_backend="edge")
-        backend = get_tts_backend(config)
-        assert isinstance(backend, EdgeTTSBackend)
-        assert backend.name == "edge"
 
     def test_mlx_backend_uses_config_values(self, tmp_path):
         config = Config(
             anthropic_api_key="k",
             data_dir=tmp_path,
+            tts_backend="mlx",
             mlx_tts_url="http://example.com:9000",
             mlx_tts_model="TestModel",
             mlx_tts_voice="alloy",
@@ -195,6 +203,41 @@ class TestGetTtsBackend:
         config = load_config()
 
         assert config.mlx_tts_speaker == "Ryan"
+
+    def test_load_config_can_opt_in_to_mlx(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PAPER_ASSIST_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("PAPER_ASSIST_TTS_BACKEND", "mlx")
+
+        config = load_config()
+
+        assert config.tts_backend == "mlx"
+        assert isinstance(get_tts_backend(config), MlxTTSBackend)
+
+
+class TestAudioQuality:
+    def test_rejects_mostly_silent_audio_at_plausible_speech_rate(self):
+        metrics = AudioQualityMetrics(
+            duration_ms=30_000,
+            nonsilent_ms=10_000,
+            trailing_silence_ms=0,
+            max_internal_silence_ms=20_000,
+            word_count=40,
+        )
+
+        with pytest.raises(MlxQualityError, match="mostly silent"):
+            raise_for_audio_quality(metrics)
+
+    def test_rejects_multi_second_internal_silent_gap(self):
+        metrics = AudioQualityMetrics(
+            duration_ms=20_000,
+            nonsilent_ms=14_000,
+            trailing_silence_ms=0,
+            max_internal_silence_ms=6_000,
+            word_count=40,
+        )
+
+        with pytest.raises(MlxQualityError, match="internal silent gap"):
+            raise_for_audio_quality(metrics)
 
 
 class TestPrepareTextForTtsFullMarkdown:
