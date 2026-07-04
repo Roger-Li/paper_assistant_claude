@@ -1,12 +1,16 @@
-Usage: /synthesize <title-or-topic> [--tags t1 --tags t2] [--query "..."] [--papers id1 id2 ...] [--no-sync-notion] [--skip-audio] [--skip-transcript]
+Usage: /synthesize <title-or-topic> [--template lit-review|comparison|study-guide] [--tags t1 --tags t2] [--query "..."] [--papers id1 id2 ...] [--no-sync-notion] [--skip-audio] [--skip-transcript]
 
-Generate a cross-paper synthesis (lit review) from stored library summaries and
-import it as a local note entry.
+Generate a cross-paper synthesis from stored library summaries and import it as
+a local note entry. Templates: `lit-review` (default; narrative review of a
+research thread), `comparison` (head-to-head decision document), `study-guide`
+(pedagogical learning path).
 
 ## Workflow
 
 1. Parse `$ARGUMENTS`: the positional words are the synthesis title/topic; flags
    as above. Tags must be passed as repeated flags, e.g. `--tags rl --tags distillation`.
+   `--template` selects the synthesis template (`lit-review` when omitted);
+   reject unknown template names with the list of valid ones.
    Derive `<slug>` from the title (lowercase, hyphens, alphanumerics only) for
    artifact paths. Default to syncing Notion unless the user explicitly passes
    `--no-sync-notion`.
@@ -47,8 +51,9 @@ import it as a local note entry.
    readable summaries remain, report which papers were skipped and why, and
    stop — never generate a synthesis from an empty corpus.**
 6. Read `src/paper_assistant/prompts/paper_synthesis_instructions.md` and
-   generate the synthesis using the `lit-review` template. Write it to
-   `.artifacts/synthesize/<slug>/synthesis.md` with no YAML front matter.
+   generate the synthesis using the selected template (default `lit-review`).
+   Write it to `.artifacts/synthesize/<slug>/synthesis.md` with no YAML front
+   matter.
 7. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration
    transcript before import:
    a. Read `.artifacts/synthesize/<slug>/synthesis.md`.
@@ -66,13 +71,14 @@ import it as a local note entry.
 8. Import in the foreground:
    `.venv/bin/paper-assist create --title "<title>" \
      --file .artifacts/synthesize/<slug>/synthesis.md \
-     --tags lit-review [--tags <user tags>...] \
+     --tags <template> [--tags <user tags>...] \
      [--script-file .artifacts/synthesize/<slug>/transcript.md --no-script-fallback] \
      [--skip-audio] [--skip-transcript] --json \
      --cleanup-file .artifacts/synthesize/<slug>/synthesis.md \
      [--cleanup-file .artifacts/synthesize/<slug>/transcript.md] \
      [--cleanup-file .artifacts/synthesize/<slug>/papers/<paper_id>.md ...]`
-   Always include the `lit-review` tag plus any user-provided tags.
+   Always include the template name as a tag (`lit-review`, `comparison`, or
+   `study-guide`) plus any user-provided tags.
    Pass one `--cleanup-file` per exported paper-body file from step 5.
    Add `--script-file ... --no-script-fallback` only when transcript generation
    succeeded, and only then include the transcript `--cleanup-file`.

@@ -16,7 +16,6 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 9. Refactor: Split `NotionClient` in `notion.py` (~2000 LOC) — extract property mapping, block fetching, and page building into focused helpers.
 10. Refactor: Break `_ast_node_to_blocks` (~145 LOC) into per-block-type sub-functions for tables, lists, and code blocks.
 11. Workflow optimization: `--sync-notion` flag on `add`/`import` commands + web API. (`skill-import` has the flag, and the `/synthesize` flow syncs via `notion-sync --paper`; plain `add`/`import` and the web API still lack it. See `docs/design-workflow-optimization.md` R1, R6)
-12b. Additional synthesis templates (`comparison`, `study-guide`) as new template slots in `paper_synthesis_instructions.md`. (lit-review shipped in 12.)
 14. Academic paper search MCP server integration — optional, for paper discovery in lit reviews. (See R3)
 15. Evaluate community research skills for adoption/inspiration. (See R7)
 
@@ -31,7 +30,8 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 6. ~~Search across titles/tags/summaries.~~ Shipped via the qmd integration: `paper-assist search` (hybrid default), web API/UI search, and skill workflows. (See `docs/plan-qmd-search.md`)
 7. ~~Non-arXiv web articles.~~ (See `docs/design-web-article-support.md`)
 12a. ~~`SourceType.NOTE` + `paper-assist create` command + local note web/API flow.~~
-12. ~~Synthesis prompt templates.~~ (2026-06-12) `/synthesize` skill (`.claude/commands/synthesize.md`) + `src/paper_assistant/prompts/paper_synthesis_instructions.md` with the `lit-review` template; imports as a `SourceType.NOTE` via `paper-assist create` (now with `--script-file`/`--no-script-fallback`/`--json`/`--cleanup-file`) and `list --json` for enumeration. Comparison/study-guide templates remain open as 12b.
+12. ~~Synthesis prompt templates.~~ (2026-06-12) `/synthesize` skill (`.claude/commands/synthesize.md`) + `src/paper_assistant/prompts/paper_synthesis_instructions.md` with the `lit-review` template; imports as a `SourceType.NOTE` via `paper-assist create` (now with `--script-file`/`--no-script-fallback`/`--json`/`--cleanup-file`) and `list --json` for enumeration.
+12b. ~~Additional synthesis templates.~~ (2026-07-03) `comparison` (verdict-first decision document with shared-axes matrix + head-to-head evidence) and `study-guide` (prerequisites, concept glossary, learning path, self-check questions) added as `### Template:` sections; `/synthesize` gained `--template` (default `lit-review`) and tags the created note with the template name.
 13. ~~Skill-based single-paper summary workflow for Claude Code/Codex.~~
 17. ~~Verified visual injection + sandboxed qmd XDG roots.~~ (2026-07-03; salvaged
    from the abandoned `fix-qmd-visuals` worktree.) `visuals.enrich_summary_with_visuals_async()`
