@@ -132,6 +132,54 @@ async def test_generate_audio_script_api_error_wraps(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generate_audio_script_skips_thinking_blocks(tmp_path):
+    config = Config(anthropic_api_key="key", data_dir=tmp_path)
+
+    fake_response = SimpleNamespace(
+        content=[
+            SimpleNamespace(thinking="planning the narration"),
+            SimpleNamespace(text="Narration after thinking."),
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+    with patch(
+        "paper_assistant.audio_script.anthropic.AsyncAnthropic", return_value=fake_client
+    ):
+        result = await generate_audio_script(
+            markdown="# One-Pager\nBody",
+            metadata=_metadata(),
+            config=config,
+        )
+
+    assert result.script_markdown == "Narration after thinking."
+
+
+@pytest.mark.asyncio
+async def test_generate_audio_script_no_text_blocks_raises_typed_error(tmp_path):
+    config = Config(anthropic_api_key="key", data_dir=tmp_path)
+
+    fake_response = SimpleNamespace(
+        content=[SimpleNamespace(thinking="only thinking, no text")],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+    with patch(
+        "paper_assistant.audio_script.anthropic.AsyncAnthropic", return_value=fake_client
+    ):
+        with pytest.raises(AudioScriptError, match="no text content"):
+            await generate_audio_script(
+                markdown="# One-Pager\nBody",
+                metadata=_metadata(),
+                config=config,
+            )
+
+
+@pytest.mark.asyncio
 async def test_generate_audio_script_empty_response_raises(tmp_path):
     config = Config(anthropic_api_key="key", data_dir=tmp_path)
 

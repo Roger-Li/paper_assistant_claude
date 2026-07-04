@@ -1,13 +1,49 @@
 """Tests for paper_assistant.summarizer parsing functions."""
 
+from types import SimpleNamespace
+
+import pytest
+
 from paper_assistant.models import PaperMetadata, SourceType
 from paper_assistant.summarizer import (
     SummarizationResult,
+    _message_text,
     find_one_pager,
     format_summary_file,
     normalize_summary_body,
     parse_summary_sections,
 )
+
+
+class TestMessageText:
+    def test_returns_text_from_single_text_block(self):
+        response = SimpleNamespace(content=[SimpleNamespace(text="Summary body.")])
+        assert _message_text(response) == "Summary body."
+
+    def test_skips_leading_non_text_blocks(self):
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(thinking="internal reasoning"),
+                SimpleNamespace(text="Actual summary."),
+            ]
+        )
+        assert _message_text(response) == "Actual summary."
+
+    def test_joins_multiple_text_blocks(self):
+        response = SimpleNamespace(
+            content=[SimpleNamespace(text="Part one."), SimpleNamespace(text="Part two.")]
+        )
+        assert _message_text(response) == "Part one.\nPart two."
+
+    def test_raises_when_no_text_blocks(self):
+        response = SimpleNamespace(content=[SimpleNamespace(thinking="only thinking")])
+        with pytest.raises(ValueError, match="no text content"):
+            _message_text(response)
+
+    def test_raises_on_empty_content(self):
+        response = SimpleNamespace(content=[])
+        with pytest.raises(ValueError, match="no text content"):
+            _message_text(response)
 
 
 class TestParseSummarySections:
