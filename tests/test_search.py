@@ -22,6 +22,7 @@ from paper_assistant.models import (
 )
 from paper_assistant.search import (
     EmbeddingsNotAvailableError,
+    QmdDatabaseOpenError,
     SearchCancelledError,
     SearchManager,
     _strip_summary_header,
@@ -137,13 +138,33 @@ class TestRunQmd:
         mgr = SearchManager(config)
         mgr._run_qmd(["search", "test"])
 
-        mock_run.assert_called_once_with(
-            ["npx", "@tobilu/qmd", "--index", "test-index", "search", "test"],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=True,
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["npx", "@tobilu/qmd", "--index", "test-index", "search", "test"]
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is True
+        assert kwargs["env"]["XDG_CACHE_HOME"] == str(tmp_path / ".qmd-cache")
+        assert kwargs["env"]["XDG_CONFIG_HOME"] == str(tmp_path / ".qmd-config")
+        assert (tmp_path / ".qmd-cache").is_dir()
+        assert (tmp_path / ".qmd-config").is_dir()
+
+    @patch("subprocess.run")
+    def test_command_uses_configured_qmd_xdg_roots(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        cache_home = tmp_path / "cache"
+        config_home = tmp_path / "config"
+        config = _make_config(
+            tmp_path,
+            qmd_cache_home=cache_home,
+            qmd_config_home=config_home,
         )
+        mgr = SearchManager(config)
+        mgr._run_qmd(["search", "test"])
+
+        env = mock_run.call_args.kwargs["env"]
+        assert env["XDG_CACHE_HOME"] == str(cache_home)
+        assert env["XDG_CONFIG_HOME"] == str(config_home)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX process group behavior")
     def test_cancellable_command_terminates_process_group(self, tmp_path):
@@ -484,6 +505,25 @@ class TestSearchParsing:
         mgr = SearchManager(config)
         with pytest.raises(RuntimeError, match="Collection 'papers' not found"):
             mgr.search("test", mode="text")
+
+    @patch("subprocess.run")
+    def test_search_surfaces_database_open_failure_with_recovery_paths(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="SqliteError: unable to open database file\n{ code: 'SQLITE_CANTOPEN' }",
+        )
+        config = _make_config(tmp_path)
+        mgr = SearchManager(config)
+
+        with pytest.raises(QmdDatabaseOpenError) as exc_info:
+            mgr.search("test", mode="text")
+
+        message = str(exc_info.value)
+        assert "PAPER_ASSIST_QMD_CACHE_HOME" in message
+        assert str(tmp_path / ".qmd-cache") in message
+        assert str(tmp_path / ".qmd-config") in message
 
     def test_extract_paper_id_slug(self, tmp_path):
         """Slug-based IDs (no dots) pass through directly."""

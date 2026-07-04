@@ -33,4 +33,12 @@ For detailed design specs, see the corresponding `docs/design-*.md` and
 12a. ~~`SourceType.NOTE` + `paper-assist create` command + local note web/API flow.~~
 12. ~~Synthesis prompt templates.~~ (2026-06-12) `/synthesize` skill (`.claude/commands/synthesize.md`) + `src/paper_assistant/prompts/paper_synthesis_instructions.md` with the `lit-review` template; imports as a `SourceType.NOTE` via `paper-assist create` (now with `--script-file`/`--no-script-fallback`/`--json`/`--cleanup-file`) and `list --json` for enumeration. Comparison/study-guide templates remain open as 12b.
 13. ~~Skill-based single-paper summary workflow for Claude Code/Codex.~~
+17. ~~Verified visual injection + sandboxed qmd XDG roots.~~ (2026-07-03; salvaged
+   from the abandoned `fix-qmd-visuals` worktree.) `visuals.enrich_summary_with_visuals_async()`
+   falls back to fetching arXiv HTML and parsing real `<img>` URLs when HF markdown
+   has captions but no image links; skill workflows call it deterministically via
+   `paper-assist visuals inject` (never guess image paths). All qmd invocations now
+   run with data-dir-local `XDG_CACHE_HOME`/`XDG_CONFIG_HOME` (overridable via
+   `PAPER_ASSIST_QMD_CACHE_HOME`/`_CONFIG_HOME`) so sandboxed agent runs can write
+   SQLite; open failures raise `QmdDatabaseOpenError` with recovery steps.
 16. ~~Notion image-sync hardening.~~ (2026-06-12) Pull paths (`_set_local_from_remote`, `_import_remote_only`) restore presigned Notion file URLs back to local `/images/<paper_id>/<basename>` refs when the file exists locally, applied before the remote-vs-local comparison so URL churn never dirties local state. Page/block writes use `_NOTION_WRITE_TIMEOUT` (120s), and sync errors surface via `describe_exception` (`str(exc) or repr(exc)`), so a `ReadTimeout` no longer reports an empty `notion_error`.

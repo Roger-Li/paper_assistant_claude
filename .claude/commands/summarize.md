@@ -54,7 +54,18 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
      places, and make later sections add mechanism, evidence, caveat,
      implementation detail, or contrast.
 8. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-9. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
+9. Run the deterministic visual injector before transcript generation:
+   `.venv/bin/paper-assist visuals inject \
+     --summary-file .artifacts/summarize-paper/<id>/summary.md \
+     --source-file .artifacts/summarize-paper/<id>/paper.md \
+     --arxiv-id <id>`
+   This preserves the existing summary when no verified image URL is available.
+   It first uses exact image Markdown already present in `paper.md`; if the file
+   has figure/table captions but no image Markdown, it fetches arXiv HTML and
+   embeds only verified `https://arxiv.org/html/...` image URLs. Never hand-write
+   guessed image paths. If the command fails, warn and continue without injected
+   visuals — they are best-effort.
+10. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.
    b. Read `src/paper_assistant/prompts/audio_script_instructions.md`.
    c. Using the host model, write the narration transcript to `.artifacts/summarize-paper/<id>/transcript.md`.
@@ -69,7 +80,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
       | user already passed `--skip-audio` | unchanged | transcript/audio remain preserved |
 
       Never pass `--script-file` or `--no-script-fallback` after a transcript-generation failure.
-10. Import in the foreground and complete:
+11. Import in the foreground and complete:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model claude-code \
@@ -88,7 +99,7 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
    Add `--script-file ... --no-script-fallback` only when transcript generation succeeded.
    Only include transcript cleanup when `transcript.md` was created and passed to `skill-import`.
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-11. Report results from the JSON output to the user.
+12. Report results from the JSON output to the user.
 
 ## Error Handling
 

@@ -103,14 +103,21 @@ For user-facing setup and usage, see [README.md](README.md).
    YAML front matter + the duplicated title/metadata header from stored summaries.
    All edit/regen/narration entry points should use it when loading from disk.
 
-5e. **Best-effort key visuals are injected by `visuals.enrich_summary_with_visuals()`.**
+5e. **Best-effort key visuals are injected by `visuals.enrich_summary_with_visuals_async()`.**
    The built-in CLI/web arXiv add flows pass the HF arXiv-HTML markdown body
-   into the helper after Claude returns the summary; up to 3 image-backed
-   figure/table candidates are injected near their first `Fig. N` / `Figure N`
-   reference. The helper is idempotent — already-present URLs are skipped.
-   Skill-driven imports do not run this helper; the agent embeds the same
-   `![Figure N: caption](https://arxiv.org/html/<id>vK/xN.png)` lines per the
-   shared `paper_summary_instructions.md` (and per `skills/codex/summarize-paper/SKILL.md`).
+   into the helper after Claude returns the summary; up to 3 verified
+   image-backed figure/table candidates are injected near their first
+   `Fig. N` / `Figure N` reference. The helper first uses exact image Markdown
+   already present in the source; if captions exist but image Markdown is
+   absent, it fetches arXiv HTML and parses real `<img>` URLs (BeautifulSoup),
+   keeping only `https://arxiv.org/html/...` targets. It is idempotent —
+   already-present URLs are skipped. (The sync `enrich_summary_with_visuals()`
+   remains for source-markdown-only injection.)
+   Skill-driven imports run the same logic deterministically via
+   `paper-assist visuals inject --summary-file ... --source-file ...
+   --arxiv-id ...` before transcript generation; agents may still copy exact
+   image Markdown from the source per `paper_summary_instructions.md`, but
+   must **never guess** arXiv image paths.
    Image markdown is stripped from TTS input by `_strip_markdown_for_speech`.
    In Notion, `_image_node_to_block` routes by URL:
    - absolute `http(s)` → external image block (e.g. arXiv-HTML figures);
@@ -163,6 +170,13 @@ For user-facing setup and usage, see [README.md](README.md).
    search to text mode.
    `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
    Every qmd invocation passes `--index <qmd_index_name>` for isolation.
+   Every qmd invocation (including the cancellable web path and the `--help`
+   availability probe) also runs with data-dir-local XDG roots:
+   `XDG_CACHE_HOME=<data_dir>/.qmd-cache`, `XDG_CONFIG_HOME=<data_dir>/.qmd-config`
+   (override via `PAPER_ASSIST_QMD_CACHE_HOME` / `PAPER_ASSIST_QMD_CONFIG_HOME`).
+   This keeps qmd's SQLite DB and collection config writable in sandboxed agent
+   runs. A SQLite open failure raises `QmdDatabaseOpenError` with recovery steps
+   (`index-setup` + `index-rebuild --embed`); the web search route maps it to 503.
    Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) for the
    CLI, web API, and skill workflows. Web UI typeahead explicitly uses text
    search for responsiveness; pressing Enter explicitly runs hybrid search.
@@ -266,6 +280,8 @@ Target files:
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)
 - `tests/test_audio_assets.py` — `render_audio_assets` force × skip matrix + fallback
 - `tests/test_audio_script.py` — Claude narration script generation
+- `tests/test_config.py` — config/env resolution including qmd local XDG roots
+- `tests/test_cli_visuals.py` — `visuals inject` skill helper
 - `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
 - `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
 - `tests/test_visuals.py` — visual extraction + best-effort injection (invariant 5e)

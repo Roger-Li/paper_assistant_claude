@@ -41,7 +41,18 @@ Use this skill when the user wants a paper summarized and stored through Paper A
      places, and make later sections add mechanism, evidence, caveat,
      implementation detail, or contrast.
 6. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-7. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
+7. Run the deterministic visual injector before transcript generation:
+   `.venv/bin/paper-assist visuals inject \
+     --summary-file .artifacts/summarize-paper/<id>/summary.md \
+     --source-file .artifacts/summarize-paper/<id>/paper.md \
+     --arxiv-id <id>`
+   This preserves the existing summary when no verified image URL is available.
+   It first uses exact image Markdown already present in `paper.md`; if the file
+   has figure/table captions but no image Markdown, it fetches arXiv HTML and
+   embeds only verified `https://arxiv.org/html/...` image URLs. Never hand-write
+   guessed image paths. If the command fails, warn and continue without injected
+   visuals — they are best-effort.
+8. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.
    b. Read `src/paper_assistant/prompts/audio_script_instructions.md`.
    c. Using the host model, write the narration transcript to `.artifacts/summarize-paper/<id>/transcript.md`.
@@ -56,7 +67,7 @@ Use this skill when the user wants a paper summarized and stored through Paper A
       | user already passed `--skip-audio` | unchanged | transcript/audio remain preserved |
 
       Never pass `--script-file` or `--no-script-fallback` after a transcript-generation failure.
-8. Import it in the foreground:
+9. Import it in the foreground:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model kiro \
@@ -74,7 +85,7 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    Add `--script-file ... --no-script-fallback` only when transcript generation succeeded.
    Only include transcript cleanup when `transcript.md` was created and passed to `skill-import`.
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-9. Parse the JSON output and report the result to the user.
+10. Parse the JSON output and report the result to the user.
 
 ## Error Handling
 

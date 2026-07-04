@@ -322,11 +322,13 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
 
             result = await summarize_paper_text(config, metadata, paper_text)
 
-            from paper_assistant.visuals import enrich_summary_with_visuals
+            from paper_assistant.visuals import enrich_summary_with_visuals_async
 
-            result.full_markdown = enrich_summary_with_visuals(
+            result.full_markdown = await enrich_summary_with_visuals_async(
                 full_markdown=result.full_markdown,
                 source_markdown=paper_text,
+                arxiv_id=arxiv_id,
+                config=config,
             )
 
             summary_content = format_summary_file(metadata, result)
@@ -531,7 +533,11 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
         """Search papers via qmd index."""
         from starlette.responses import JSONResponse
 
-        from paper_assistant.search import EmbeddingsNotAvailableError, SearchCancelledError
+        from paper_assistant.search import (
+            EmbeddingsNotAvailableError,
+            QmdDatabaseOpenError,
+            SearchCancelledError,
+        )
 
         if not search_mgr:
             return JSONResponse(
@@ -549,10 +555,14 @@ def create_router(config: Config, templates: Jinja2Templates) -> APIRouter:
                 results = await run_search_for_request(request, q, limit, "text")
             except SearchCancelledError:
                 return Response(status_code=499)
+            except QmdDatabaseOpenError as e:
+                return JSONResponse({"error": str(e)}, status_code=503)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
         except SearchCancelledError:
             return Response(status_code=499)
+        except QmdDatabaseOpenError as e:
+            return JSONResponse({"error": str(e)}, status_code=503)
         except RuntimeError as e:
             err_msg = str(e)
             if "not found" in err_msg.lower() or "collection" in err_msg.lower():

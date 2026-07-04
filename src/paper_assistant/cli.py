@@ -200,11 +200,13 @@ async def _add_arxiv_paper(
             paper_text = extract_text_from_pdf(pdf_path)
             result = await summarize_paper_text(config, metadata, paper_text)
 
-        from paper_assistant.visuals import enrich_summary_with_visuals
+        from paper_assistant.visuals import enrich_summary_with_visuals_async
 
-        result.full_markdown = enrich_summary_with_visuals(
+        result.full_markdown = await enrich_summary_with_visuals_async(
             full_markdown=result.full_markdown,
             source_markdown=paper_text,
+            arxiv_id=arxiv_id,
+            config=config,
         )
 
         summary_content = format_summary_file(metadata, result)
@@ -900,6 +902,69 @@ def extract_text(pdf_path: str, max_pages: int, output: str | None) -> None:
         return
 
     click.echo(markdown, nl=False)
+
+
+@main.group("visuals")
+def visuals_group() -> None:
+    """Visual extraction helpers for skill workflows."""
+
+
+@visuals_group.command("inject")
+@click.option(
+    "--summary-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Summary markdown file to enrich.",
+)
+@click.option(
+    "--source-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Fetched paper markdown file used as visual source context.",
+)
+@click.option("--arxiv-id", required=True, help="Canonical arXiv ID for HTML visual fallback.")
+@click.option("--output-file", type=click.Path(dir_okay=False), help="Write output elsewhere.")
+@click.option("--max-visuals", default=3, show_default=True, help="Maximum images to inject.")
+@click.pass_context
+def visuals_inject(
+    ctx: click.Context,
+    summary_file: str,
+    source_file: str,
+    arxiv_id: str,
+    output_file: str | None,
+    max_visuals: int,
+) -> None:
+    """Inject verified arXiv visual Markdown into a generated summary."""
+    from paper_assistant.config import load_config
+    from paper_assistant.visuals import enrich_summary_with_visuals_async
+
+    config = load_config(**ctx.obj)
+    summary_path = Path(summary_file)
+    source_path = Path(source_file)
+    output_path = Path(output_file) if output_file else summary_path
+
+    summary_markdown = summary_path.read_text(encoding="utf-8")
+    source_markdown = source_path.read_text(encoding="utf-8")
+    enriched = asyncio.run(
+        enrich_summary_with_visuals_async(
+            full_markdown=summary_markdown,
+            source_markdown=source_markdown,
+            arxiv_id=arxiv_id,
+            config=config,
+            max_visuals=max_visuals,
+        )
+    )
+
+    if output_path == summary_path and enriched == summary_markdown:
+        console.print("[dim]No verified visual images found to inject.[/dim]")
+        return
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(enriched, encoding="utf-8")
+    if enriched == summary_markdown:
+        console.print(f"[dim]Summary unchanged; wrote {output_path}.[/dim]")
+    else:
+        console.print(f"[green]Injected verified visuals into[/green] {output_path}")
 
 
 @main.command("create")

@@ -27,6 +27,10 @@ class SearchCancelledError(Exception):
     """Raised when a running qmd search is cancelled."""
 
 
+class QmdDatabaseOpenError(RuntimeError):
+    """Raised when qmd cannot open its SQLite index database."""
+
+
 @dataclass
 class SearchResult:
     """A single search hit returned by qmd."""
@@ -56,6 +60,7 @@ class SearchManager:
                 [*self._config.qmd_command, "--help"],
                 capture_output=True,
                 check=False,
+                env=self._qmd_env(create_dirs=False),
             )
             self._available = True
         except FileNotFoundError:
@@ -158,8 +163,13 @@ class SearchManager:
 
         # Surface non-zero exits as real errors (corrupt index, missing collection, etc.)
         if proc.returncode != 0:
+            message = stderr.strip() or stdout.strip()
+            if _looks_like_qmd_database_open_error(message):
+                raise QmdDatabaseOpenError(
+                    _format_qmd_database_open_error(self._config, message)
+                )
             raise RuntimeError(
-                f"qmd {qmd_cmd} failed (exit {proc.returncode}): {stderr.strip() or stdout.strip()}"
+                f"qmd {qmd_cmd} failed (exit {proc.returncode}): {message}"
             )
 
         # Detect missing embeddings for vector/hybrid modes
@@ -261,6 +271,7 @@ class SearchManager:
             capture_output=True,
             text=True,
             check=check,
+            env=self._qmd_env(create_dirs=True),
         )
 
     def _run_qmd_cancellable(
@@ -279,6 +290,7 @@ class SearchManager:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            "env": self._qmd_env(create_dirs=True),
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -373,6 +385,17 @@ class SearchManager:
         except ProcessLookupError:
             pass
 
+    def _qmd_env(self, *, create_dirs: bool) -> dict[str, str]:
+        cache_home = self._config.resolved_qmd_cache_home
+        config_home = self._config.resolved_qmd_config_home
+        if create_dirs:
+            cache_home.mkdir(parents=True, exist_ok=True)
+            config_home.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["XDG_CACHE_HOME"] = str(cache_home)
+        env["XDG_CONFIG_HOME"] = str(config_home)
+        return env
+
     def _extract_paper_id(self, file_path: str) -> str | None:
         """Extract paper_id from qmd file path like 'qmd://papers/2503-10291.md'.
 
@@ -429,6 +452,24 @@ def get_search_manager(config: Config) -> SearchManager | None:
     if not mgr.is_available():
         return None
     return mgr
+
+
+def _looks_like_qmd_database_open_error(message: str) -> bool:
+    lowered = message.lower()
+    return "sqlite_cantopen" in lowered or "unable to open database file" in lowered
+
+
+def _format_qmd_database_open_error(config: Config, qmd_message: str) -> str:
+    return (
+        "qmd cannot open its SQLite index database. Paper Assistant runs qmd with "
+        f"XDG_CACHE_HOME={config.resolved_qmd_cache_home} and "
+        f"XDG_CONFIG_HOME={config.resolved_qmd_config_home}; both directories must be writable. "
+        "Run `paper-assist index-setup` once, then `paper-assist index-rebuild --embed` "
+        "to populate the local index. If those paths are outside the writable area, set "
+        "PAPER_ASSIST_QMD_CACHE_HOME and PAPER_ASSIST_QMD_CONFIG_HOME to directories under "
+        "PAPER_ASSIST_DATA_DIR. "
+        f"Underlying qmd error: {qmd_message}"
+    )
 
 
 def _strip_summary_header(raw: str) -> str:

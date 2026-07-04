@@ -19,8 +19,19 @@ not exhaustive coverage.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
+from urllib.parse import urljoin
+from typing import TYPE_CHECKING
+
+import httpx
+from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:
+    from paper_assistant.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 # arXiv HTML wraps alt text containing brackets (e.g. ``[Uncaptioned image]``)
@@ -31,7 +42,7 @@ _IMAGE_MARKDOWN_RE = re.compile(
 )
 
 _CAPTION_HEADER_RE = re.compile(
-    r"^\s*(?P<kind>Figure|Fig\.?|Table|Tab\.?)\s*(?P<number>\d+)\s*[:.]\s*(?P<text>.+?)\s*$",
+    r"^\s*(?P<kind>Figure|Fig\.?|Table|Tab\.?)\s*(?P<number>\d+)\s*[:.|]\s*(?P<text>.+?)\s*$",
     re.IGNORECASE,
 )
 
@@ -135,6 +146,75 @@ def extract_visual_candidates(markdown: str) -> list[VisualCandidate]:
     return candidates
 
 
+def extract_visual_candidates_from_arxiv_html(
+    html: str,
+    *,
+    base_url: str,
+) -> list[VisualCandidate]:
+    """Parse arXiv HTML for image-backed figure/table candidates."""
+    if not html:
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: list[VisualCandidate] = []
+    seen: set[tuple[str, int]] = set()
+
+    for container in soup.find_all(["figure", "table"]):
+        img = container.find("img", src=True)
+        if img is None:
+            continue
+
+        caption_node = container.find("figcaption") or container.find(
+            class_=re.compile(r"\bltx_caption\b")
+        )
+        if caption_node is None:
+            continue
+
+        parsed = _parse_caption(caption_node.get_text(" ", strip=True))
+        if parsed is None:
+            continue
+        kind, number, caption = parsed
+        key = (kind, number)
+        if key in seen:
+            continue
+
+        image_url = _normalize_arxiv_html_image_url(str(img.get("src", "")), base_url)
+        if image_url is None:
+            continue
+
+        candidates.append(
+            VisualCandidate(
+                kind=kind,
+                number=number,
+                image_url=image_url,
+                caption=caption,
+                alt_text=str(img.get("alt", "")),
+            )
+        )
+        seen.add(key)
+
+    return candidates
+
+
+async def fetch_arxiv_html_visual_candidates(
+    arxiv_id: str,
+    *,
+    config: Config | None = None,
+) -> list[VisualCandidate]:
+    """Fetch arXiv HTML and extract verified image-backed visuals."""
+    headers = {}
+    if config is not None:
+        headers["User-Agent"] = config.arxiv_user_agent
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        response = await client.get(f"https://arxiv.org/html/{arxiv_id}", headers=headers)
+        response.raise_for_status()
+        return extract_visual_candidates_from_arxiv_html(
+            response.text,
+            base_url=str(response.url),
+        )
+
+
 def inject_visuals(
     summary_markdown: str,
     candidates: list[VisualCandidate],
@@ -223,3 +303,52 @@ def enrich_summary_with_visuals(
     if not candidates:
         return full_markdown
     return inject_visuals(full_markdown, candidates, max_visuals=max_visuals)
+
+
+async def enrich_summary_with_visuals_async(
+    *,
+    full_markdown: str,
+    source_markdown: str | None,
+    arxiv_id: str | None = None,
+    config: Config | None = None,
+    max_visuals: int = DEFAULT_MAX_VISUALS,
+) -> str:
+    """Async enrichment that can fall back to verified arXiv HTML parsing."""
+    if not source_markdown:
+        return full_markdown
+
+    candidates = extract_visual_candidates(source_markdown)
+    if not candidates and arxiv_id and _contains_visual_captions(source_markdown):
+        try:
+            candidates = await fetch_arxiv_html_visual_candidates(arxiv_id, config=config)
+        except Exception as exc:
+            logger.warning("arXiv HTML visual lookup failed for %s: %s", arxiv_id, exc)
+
+    if not candidates:
+        return full_markdown
+    return inject_visuals(full_markdown, candidates, max_visuals=max_visuals)
+
+
+def _parse_caption(text: str) -> tuple[str, int, str] | None:
+    normalized = " ".join(text.split())
+    match = _CAPTION_HEADER_RE.match(normalized)
+    if match is None:
+        return None
+    return (
+        _normalize_kind(match.group("kind")),
+        int(match.group("number")),
+        match.group("text").strip(),
+    )
+
+
+def _contains_visual_captions(markdown: str) -> bool:
+    return any(_CAPTION_HEADER_RE.match(line) for line in markdown.splitlines())
+
+
+def _normalize_arxiv_html_image_url(src: str, base_url: str) -> str | None:
+    if not src or src.startswith("data:"):
+        return None
+    url = urljoin(base_url.rstrip("/") + "/", src).split("#", 1)[0]
+    if not url.startswith(_ARXIV_HTML_PREFIX):
+        return None
+    return url
