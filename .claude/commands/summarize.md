@@ -2,8 +2,12 @@ Usage: /summarize <arxiv-url-or-id> [--tags t1 --tags t2] [--no-sync-notion] [--
 
 ## Workflow
 
-1. Parse `$ARGUMENTS` for a bare arXiv ID, a full arXiv URL, or a Hugging Face paper URL, plus tags and flags.
+1. Parse `$ARGUMENTS` for a bare arXiv ID, a full arXiv URL, a Hugging Face paper URL, or an OpenReview URL, plus tags and flags.
    Normalize any accepted input form to the canonical arXiv ID `<id>` immediately and use that ID for the rest of the workflow.
+   For OpenReview URLs (`openreview.net/forum?id=<ovid>` or `openreview.net/pdf?id=<ovid>`), resolve to an arXiv ID first:
+   a. `curl -sL "https://api2.openreview.net/notes?id=<ovid>"` and read the title and authors from `content` (fields may be `{"value": ...}`-wrapped). Use **api2**; the legacy `api.openreview.net` 404s for newer Archive notes. OpenReview may answer with a 403 `ChallengeRequiredError` (browser verification, observed 2026-07); then recover the title another way — web-search the OpenReview ID, or ask the user for the paper title — instead of retrying curl.
+   b. Search arXiv by exact title — `curl -sL "https://export.arxiv.org/api/query?search_query=ti:%22<url-encoded-title>%22&max_results=3"` — and accept a hit only when the title matches and the author list overlaps. (The endpoint can transiently reply `Rate exceeded.`; wait ~30s and retry once.)
+   c. On a confirmed match, use that arXiv ID as `<id>` and continue normally. If no arXiv counterpart exists, stop and tell the user — the pipeline is arXiv-keyed, and a direct-upload OpenReview note may have no arXiv version.
    Tags must be passed as repeated flags, e.g. `--tags rl --tags agent`.
    Default to syncing Notion unless the user explicitly passes `--no-sync-notion`.
 2. Read summary instructions from `src/paper_assistant/prompts/paper_summary_instructions.md`.

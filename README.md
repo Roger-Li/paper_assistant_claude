@@ -358,7 +358,7 @@ Use:
 ```
 
 The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `src/paper_assistant/prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, runs `paper-assist visuals inject` to add verified arXiv image links when available, and, unless `--skip-transcript` or `--skip-audio` is present, generates `.artifacts/summarize-paper/<id>/transcript.md` from `src/paper_assistant/prompts/audio_script_instructions.md` before finishing through `paper-assist skill-import --script-file ... --no-script-fallback`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
-Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval.
+Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval. OpenReview URLs (`openreview.net/forum?id=...` / `pdf?id=...`) are accepted best-effort: the skill resolves them to an arXiv ID via the OpenReview API plus an arXiv title search, and stops with a clear message when no arXiv counterpart exists.
 
 To synthesize a literature review across papers already in your library:
 
