@@ -81,6 +81,8 @@ Configuration resolution order is:
 | `PAPER_ASSIST_QMD_COMMAND` | No | `qmd` | Shell-style command to invoke qmd (e.g. `npx @tobilu/qmd`). |
 | `PAPER_ASSIST_QMD_INDEX` | No | `paper-assistant` | Named qmd index for isolation. |
 | `PAPER_ASSIST_QMD_COLLECTION` | No | `papers` | qmd collection name. |
+| `PAPER_ASSIST_QMD_CACHE_HOME` | No | `<data_dir>/.qmd-cache` | qmd cache root passed as `XDG_CACHE_HOME`; keeps SQLite writable for sandboxed agent runs. |
+| `PAPER_ASSIST_QMD_CONFIG_HOME` | No | `<data_dir>/.qmd-config` | qmd config root passed as `XDG_CONFIG_HOME`; keeps collection config local to the library. |
 | `PAPER_ASSIST_NOTION_SYNC_ENABLED` | No | `false` | Enable manual Notion sync features. |
 | `PAPER_ASSIST_NOTION_TOKEN` | No* | none | Notion integration token (*required when sync is enabled). |
 | `PAPER_ASSIST_NOTION_DATABASE_ID` | No* | none | Target Notion database ID (*required when sync is enabled). |
@@ -112,6 +114,7 @@ For arXiv papers, `paper_id` is the arXiv ID (e.g., `2503.10291`). For web artic
 | `paper-assist import <url-or-id>` | Import pre-written markdown summary (arXiv ID, arXiv/HF paper URL, or web URL, optional `--model`) |
 | `paper-assist skill-import <url-or-id>` | Agent-oriented import with deterministic provenance, cleanup, and JSON output |
 | `paper-assist extract-text <pdf-path>` | Extract PDF text to markdown for skill fallback workflows |
+| `paper-assist visuals inject --summary-file ... --source-file ... --arxiv-id ...` | Inject verified arXiv figure/table image links into a generated summary |
 | `paper-assist create --title ...` | Create a local markdown-backed note or article bookmark (`--script-file`/`--no-script-fallback`, `--json`, `--cleanup-file`) |
 | `paper-assist list` | List papers (`--status`, `--tag`, `--json`) |
 | `paper-assist show <paper_id>` | Print summary in terminal (`--body` prints the normalized plain-markdown body for scripts/skills) |
@@ -152,9 +155,11 @@ When the arXiv HTML markdown is available (the default Hugging Face retrieval pa
 the add pipeline injects up to three of the paper's image-backed figures or
 tables next to the first `Figure N` / `Table N` reference in the generated
 summary. Images are linked directly from `arxiv.org/html/...`, render in the
-web UI and Notion, and are stripped from the audio narration. If no matching
-HF image link is available, the summary keeps the prose description and skips
-the image instead of guessing.
+web UI and Notion, and are stripped from the audio narration. If the HF markdown
+has captions but no image links, Paper Assistant fetches arXiv HTML and embeds
+only verified image URLs. If no verified link is available, the summary keeps
+the prose description and skips the image instead of guessing. Skill workflows
+get the same behavior deterministically via `paper-assist visuals inject`.
 
 For papers with **no arXiv HTML render** (PDF-only sources), figures can instead
 be saved locally under `<data_dir>/images/<paper_id>/` and referenced in the
@@ -352,16 +357,16 @@ Use:
 /summarize <arxiv-url-or-id> [--tags ...] [--no-sync-notion] [--skip-audio] [--skip-transcript] [--force]
 ```
 
-The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `src/paper_assistant/prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, and, unless `--skip-transcript` or `--skip-audio` is present, generates `.artifacts/summarize-paper/<id>/transcript.md` from `src/paper_assistant/prompts/audio_script_instructions.md` before finishing through `paper-assist skill-import --script-file ... --no-script-fallback`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
-Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval.
+The command fetches metadata via `hf papers info`, fetches the paper body via `hf papers read` (falling back to PDF download), reads `src/paper_assistant/prompts/paper_summary_instructions.md`, writes `.artifacts/summarize-paper/<id>/summary.md`, runs `paper-assist visuals inject` to add verified arXiv image links when available, and, unless `--skip-transcript` or `--skip-audio` is present, generates `.artifacts/summarize-paper/<id>/transcript.md` from `src/paper_assistant/prompts/audio_script_instructions.md` before finishing through `paper-assist skill-import --script-file ... --no-script-fallback`. Notion sync is now on by default for this workflow; pass `--no-sync-notion` only when you intentionally want a local-only run.
+Bare arXiv IDs like `2503.10291`, canonical arXiv URLs like `https://arxiv.org/abs/2503.10291`, and HF paper URLs like `https://huggingface.co/papers/2503.10291` are all accepted; the workflow normalizes any of them to the arXiv ID and uses the Hugging Face paper route by default for retrieval. OpenReview URLs (`openreview.net/forum?id=...` / `pdf?id=...`) are accepted best-effort: the skill resolves them to an arXiv ID via the OpenReview API plus an arXiv title search, and stops with a clear message when no arXiv counterpart exists.
 
-To synthesize a literature review across papers already in your library:
+To synthesize a document across papers already in your library:
 
 ```text
-/synthesize <title-or-topic> [--tags t1 --tags t2] [--query "..."] [--papers id1 id2 ...] [--no-sync-notion] [--skip-audio] [--skip-transcript]
+/synthesize <title-or-topic> [--template lit-review|comparison|study-guide] [--tags t1 --tags t2] [--query "..."] [--papers id1 id2 ...] [--no-sync-notion] [--skip-audio] [--skip-transcript]
 ```
 
-The command resolves a paper set from tags, a search query, or explicit IDs (via `paper-assist list --json` / `search --json`), **shows you the matched papers and waits for confirmation**, then reads their stored summaries and generates a `lit-review`-template synthesis per `src/paper_assistant/prompts/paper_synthesis_instructions.md`. The result is imported as a local note (tagged `lit-review`) through `paper-assist create`, gets a narration transcript + audio like any other entry unless skipped, and syncs to Notion by default.
+The command resolves a paper set from tags, a search query, or explicit IDs (via `paper-assist list --json` / `search --json`), **shows you the matched papers and waits for confirmation**, then reads their stored summaries and generates the synthesis per `src/paper_assistant/prompts/paper_synthesis_instructions.md` using the selected template: `lit-review` (default) writes a narrative review of a research thread, `comparison` writes a head-to-head decision document with a shared-axes matrix, and `study-guide` writes a pedagogical learning path with self-check questions. The result is imported as a local note (tagged with the template name) through `paper-assist create`, gets a narration transcript + audio like any other entry unless skipped, and syncs to Notion by default.
 
 ### Codex
 
@@ -371,7 +376,7 @@ Ask:
 Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
 ```
 
-You can also pass just `2503.10291` or an HF paper URL like `https://huggingface.co/papers/2503.10291`. The in-repo `skills/codex/summarize-paper/SKILL.md` normalizes any accepted form to the arXiv ID, uses the Hugging Face paper route by default for retrieval, and then imports via the canonical arXiv abs URL while stamping provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
+You can also pass just `2503.10291` or an HF paper URL like `https://huggingface.co/papers/2503.10291`. The in-repo `skills/codex/summarize-paper/SKILL.md` normalizes any accepted form to the arXiv ID, uses the Hugging Face paper route by default for retrieval, runs `paper-assist visuals inject` before transcript generation, and then imports via the canonical arXiv abs URL while stamping provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
 
 ### Kiro
 
@@ -436,6 +441,15 @@ echo "PAPER_ASSIST_QMD_ENABLED=true" >> .env
 paper-assist index-setup
 paper-assist index-rebuild --embed
 ```
+
+Paper Assistant runs qmd with data-dir-local XDG roots by default:
+`XDG_CACHE_HOME=<data_dir>/.qmd-cache` and
+`XDG_CONFIG_HOME=<data_dir>/.qmd-config`. This avoids sandboxed agent failures
+where SQLite cannot open `~/.cache/qmd`. If you override either path, keep it
+writable by the process that runs `paper-assist`. Note that any index built
+before this default (under `~/.cache/qmd`) is not picked up automatically —
+run `paper-assist index-setup` and `paper-assist index-rebuild --embed` once
+to rebuild in the new location.
 
 ### Usage
 

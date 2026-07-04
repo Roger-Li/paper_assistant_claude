@@ -7,8 +7,12 @@ Use this skill when the user wants a paper summarized and stored through Paper A
 
 ## Workflow
 
-1. Parse the user's request for a bare arXiv ID, a full arXiv URL, or a Hugging Face paper URL, plus any tags and flags such as `--skip-audio`, `--skip-transcript`, and `--force`.
+1. Parse the user's request for a bare arXiv ID, a full arXiv URL, a Hugging Face paper URL, or an OpenReview URL, plus any tags and flags such as `--skip-audio`, `--skip-transcript`, and `--force`.
    Normalize any accepted input form to the canonical arXiv ID `<id>` immediately and use that ID for the rest of the workflow.
+   For OpenReview URLs (`openreview.net/forum?id=<ovid>` or `openreview.net/pdf?id=<ovid>`), resolve to an arXiv ID first:
+   a. `curl -sL "https://api2.openreview.net/notes?id=<ovid>"` and read the title and authors from `content` (fields may be `{"value": ...}`-wrapped). Use **api2**; the legacy `api.openreview.net` 404s for newer Archive notes. OpenReview may answer with a 403 `ChallengeRequiredError` (browser verification, observed 2026-07); then recover the title another way — web-search the OpenReview ID, or ask the user for the paper title — instead of retrying curl.
+   b. Search arXiv by exact title — `curl -sL "https://export.arxiv.org/api/query?search_query=ti:%22<url-encoded-title>%22&max_results=3"` — and accept a hit only when the title matches and the author list overlaps. (The endpoint can transiently reply `Rate exceeded.`; wait ~30s and retry once.)
+   c. On a confirmed match, use that arXiv ID and continue normally. If no arXiv counterpart exists, stop and tell the user — the pipeline is arXiv-keyed, and a direct-upload OpenReview note may have no arXiv version.
    Tags must be repeated flags, e.g. `--tags rl --tags agent`.
 2. Read `src/paper_assistant/prompts/paper_summary_instructions.md`.
 3. Create a repo-local artifact directory for the normalized arXiv ID:
@@ -41,7 +45,18 @@ Use this skill when the user wants a paper summarized and stored through Paper A
      places, and make later sections add mechanism, evidence, caveat,
      implementation detail, or contrast.
 6. Write the summary to `.artifacts/summarize-paper/<id>/summary.md` with no YAML front matter.
-7. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
+7. Run the deterministic visual injector before transcript generation:
+   `.venv/bin/paper-assist visuals inject \
+     --summary-file .artifacts/summarize-paper/<id>/summary.md \
+     --source-file .artifacts/summarize-paper/<id>/paper.md \
+     --arxiv-id <id>`
+   This preserves the existing summary when no verified image URL is available.
+   It first uses exact image Markdown already present in `paper.md`; if the file
+   has figure/table captions but no image Markdown, it fetches arXiv HTML and
+   embeds only verified `https://arxiv.org/html/...` image URLs. Never hand-write
+   guessed image paths. If the command fails, warn and continue without injected
+   visuals — they are best-effort.
+8. Unless `--skip-transcript` or `--skip-audio` is present, generate a narration transcript before import:
    a. Read `.artifacts/summarize-paper/<id>/summary.md`.
    b. Read `src/paper_assistant/prompts/audio_script_instructions.md`.
    c. Using the host model, write the narration transcript to `.artifacts/summarize-paper/<id>/transcript.md`.
@@ -56,7 +71,7 @@ Use this skill when the user wants a paper summarized and stored through Paper A
       | user already passed `--skip-audio` | unchanged | transcript/audio remain preserved |
 
       Never pass `--script-file` or `--no-script-fallback` after a transcript-generation failure.
-8. Import it in the foreground:
+9. Import it in the foreground:
    `.venv/bin/paper-assist skill-import https://arxiv.org/abs/<id> \
      --file .artifacts/summarize-paper/<id>/summary.md \
      --model kiro \
@@ -74,7 +89,7 @@ Use this skill when the user wants a paper summarized and stored through Paper A
    Add `--script-file ... --no-script-fallback` only when transcript generation succeeded.
    Only include transcript cleanup when `transcript.md` was created and passed to `skill-import`.
    Only include `--cleanup-file` for `paper.pdf` if the PDF fallback was used.
-9. Parse the JSON output and report the result to the user.
+10. Parse the JSON output and report the result to the user.
 
 ## Error Handling
 

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import textwrap
 
 from paper_assistant.visuals import (
     VisualCandidate,
+    enrich_summary_with_visuals_async,
     enrich_summary_with_visuals,
     extract_visual_candidates,
+    extract_visual_candidates_from_arxiv_html,
     inject_visuals,
 )
 
@@ -128,6 +131,52 @@ class TestExtractVisualCandidates:
             caption="",
         )
         assert cand.to_markdown() == "![Figure 2](https://arxiv.org/html/x/x2.png)"
+
+    def test_caption_accepts_pipe_separator_and_no_space(self):
+        markdown = textwrap.dedent(
+            """\
+            ![Image](https://arxiv.org/html/2605.28814v1/x1.png)
+
+            Figure 1:Comparison of search methods.
+
+            ![Image](https://arxiv.org/html/2605.28814v1/x2.png)
+
+            Figure 2 | Overall architecture.
+            """
+        )
+        candidates = extract_visual_candidates(markdown)
+        assert [(c.kind, c.number) for c in candidates] == [("figure", 1), ("figure", 2)]
+        assert candidates[0].caption == "Comparison of search methods."
+
+
+class TestExtractVisualCandidatesFromArxivHtml:
+    def test_extracts_verified_relative_and_absolute_images(self):
+        html = textwrap.dedent(
+            """\
+            <html><body>
+              <figure>
+                <img src="x1.png" alt="architecture">
+                <figcaption>Figure 1: Architecture overview.</figcaption>
+              </figure>
+              <figure>
+                <img src="/html/2412.04468v2/x2.png">
+                <figcaption>Table 2 | Result summary.</figcaption>
+              </figure>
+              <figure>
+                <img src="data:image/png;base64,abc">
+                <figcaption>Figure 3: Data URLs are skipped.</figcaption>
+              </figure>
+            </body></html>
+            """
+        )
+        candidates = extract_visual_candidates_from_arxiv_html(
+            html,
+            base_url="https://arxiv.org/html/2412.04468v2",
+        )
+
+        assert [(c.kind, c.number) for c in candidates] == [("figure", 1), ("table", 2)]
+        assert candidates[0].image_url == "https://arxiv.org/html/2412.04468v2/x1.png"
+        assert candidates[1].image_url == "https://arxiv.org/html/2412.04468v2/x2.png"
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +332,32 @@ class TestEnrichSummaryWithVisuals:
             source_markdown="No images, no captions, just prose.",
         )
         assert out == summary
+
+    def test_async_fetches_arxiv_html_when_source_has_caption_without_image(self, monkeypatch):
+        async def fake_fetch(arxiv_id, *, config=None):
+            assert arxiv_id == "2605.28814"
+            return [
+                VisualCandidate(
+                    kind="figure",
+                    number=1,
+                    image_url="https://arxiv.org/html/2605.28814v1/x1.png",
+                    caption="Comparison of search methods.",
+                )
+            ]
+
+        monkeypatch.setattr(
+            "paper_assistant.visuals.fetch_arxiv_html_visual_candidates",
+            fake_fetch,
+        )
+        summary = "The main idea is easiest to see in Figure 1."
+        source = "Figure 1:Comparison of search methods."
+
+        out = asyncio.run(
+            enrich_summary_with_visuals_async(
+                full_markdown=summary,
+                source_markdown=source,
+                arxiv_id="2605.28814",
+            )
+        )
+
+        assert "https://arxiv.org/html/2605.28814v1/x1.png" in out

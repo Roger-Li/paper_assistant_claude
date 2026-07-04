@@ -103,14 +103,21 @@ For user-facing setup and usage, see [README.md](README.md).
    YAML front matter + the duplicated title/metadata header from stored summaries.
    All edit/regen/narration entry points should use it when loading from disk.
 
-5e. **Best-effort key visuals are injected by `visuals.enrich_summary_with_visuals()`.**
+5e. **Best-effort key visuals are injected by `visuals.enrich_summary_with_visuals_async()`.**
    The built-in CLI/web arXiv add flows pass the HF arXiv-HTML markdown body
-   into the helper after Claude returns the summary; up to 3 image-backed
-   figure/table candidates are injected near their first `Fig. N` / `Figure N`
-   reference. The helper is idempotent — already-present URLs are skipped.
-   Skill-driven imports do not run this helper; the agent embeds the same
-   `![Figure N: caption](https://arxiv.org/html/<id>vK/xN.png)` lines per the
-   shared `paper_summary_instructions.md` (and per `skills/codex/summarize-paper/SKILL.md`).
+   into the helper after Claude returns the summary; up to 3 verified
+   image-backed figure/table candidates are injected near their first
+   `Fig. N` / `Figure N` reference. The helper first uses exact image Markdown
+   already present in the source; if captions exist but image Markdown is
+   absent, it fetches arXiv HTML and parses real `<img>` URLs (BeautifulSoup),
+   keeping only `https://arxiv.org/html/...` targets. It is idempotent —
+   already-present URLs are skipped. (The sync `enrich_summary_with_visuals()`
+   remains for source-markdown-only injection.)
+   Skill-driven imports run the same logic deterministically via
+   `paper-assist visuals inject --summary-file ... --source-file ...
+   --arxiv-id ...` before transcript generation; agents may still copy exact
+   image Markdown from the source per `paper_summary_instructions.md`, but
+   must **never guess** arXiv image paths.
    Image markdown is stripped from TTS input by `_strip_markdown_for_speech`.
    In Notion, `_image_node_to_block` routes by URL:
    - absolute `http(s)` → external image block (e.g. arXiv-HTML figures);
@@ -163,6 +170,13 @@ For user-facing setup and usage, see [README.md](README.md).
    search to text mode.
    `qmd_command` is `list[str]` internally; env var is shell-style → `shlex.split()`.
    Every qmd invocation passes `--index <qmd_index_name>` for isolation.
+   Every qmd invocation (including the cancellable web path and the `--help`
+   availability probe) also runs with data-dir-local XDG roots:
+   `XDG_CACHE_HOME=<data_dir>/.qmd-cache`, `XDG_CONFIG_HOME=<data_dir>/.qmd-config`
+   (override via `PAPER_ASSIST_QMD_CACHE_HOME` / `PAPER_ASSIST_QMD_CONFIG_HOME`).
+   This keeps qmd's SQLite DB and collection config writable in sandboxed agent
+   runs. A SQLite open failure raises `QmdDatabaseOpenError` with recovery steps
+   (`index-setup` + `index-rebuild --embed`); the web search route maps it to 503.
    Default search mode is **hybrid** (BM25 + vector + LLM re-ranking) for the
    CLI, web API, and skill workflows. Web UI typeahead explicitly uses text
    search for responsiveness; pressing Enter explicitly runs hybrid search.
@@ -199,10 +213,11 @@ For user-facing setup and usage, see [README.md](README.md).
 - `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose, and should run the prompt's redundancy pass before import (no repeated method definitions; headline metrics appear only where they add value).
 - Paper content retrieval prefers `hf papers info <id>` for metadata and `hf papers read <id>` for body content (redirected to a file to avoid shell output truncation); PDF download is the fallback path only.
 - `skill-import` must always receive the canonical arXiv URL (`https://arxiv.org/abs/<id>`), not HuggingFace or other source URLs, so that `paper_id` resolves to the arXiv ID.
+- OpenReview URLs are accepted by the summarize skills but must be resolved to an arXiv ID first: `api2.openreview.net/notes?id=<ovid>` for title/authors (legacy api host 404s on Archive notes; api2 may 403 with `ChallengeRequiredError` — fall back to web-searching the ID or asking the user for the title), then an arXiv title search with author-overlap confirmation. No arXiv counterpart → stop; the pipeline is arXiv-keyed.
 - Skill-based summary workflows sync Notion by default unless the user explicitly opts out with `--no-sync-notion`. The Kiro skill omits Notion sync entirely (designed for environments without Notion credentials).
 - Skill-based summary workflows now generate `.artifacts/summarize-paper/<paper_id>/transcript.md` by default when audio is enabled, then pass `--script-file ... --no-script-fallback` to `skill-import`. If transcript generation fails, they warn first and fall back to `--skip-transcript` or `--skip-audio` instead of shipping an empty script file.
 - Artifacts live under `.artifacts/summarize-paper/` during skill runs; `/synthesize` uses `.artifacts/synthesize/<slug>/`.
-- `/synthesize` (`.claude/commands/synthesize.md`) builds a cross-paper lit review from stored summaries per `src/paper_assistant/prompts/paper_synthesis_instructions.md` and imports it via `paper-assist create`. It must confirm the resolved paper set with the user before generating. `create --json` returns the post-dedupe `paper_id` (authoritative — pass it to `notion-sync --paper`), and JSON mode keeps stdout machine-parseable (iCloud copy messages route to structured warnings, never stdout). `search --json` hits carry only `paper_id`/`title`/`score`/`snippet` — hydrate them through `list --json` for tags and `summary_path`. Skills read summary bodies via `paper-assist show <id> --body`, which goes through `normalize_summary_body()` (invariant 5d) — never re-implement front-matter stripping in skill instructions.
+- `/synthesize` (`.claude/commands/synthesize.md`) builds a cross-paper synthesis from stored summaries per `src/paper_assistant/prompts/paper_synthesis_instructions.md` and imports it via `paper-assist create`. `--template` selects `lit-review` (default), `comparison`, or `study-guide`; the created note is tagged with the template name. It must confirm the resolved paper set with the user before generating. `create --json` returns the post-dedupe `paper_id` (authoritative — pass it to `notion-sync --paper`), and JSON mode keeps stdout machine-parseable (iCloud copy messages route to structured warnings, never stdout). `search --json` hits carry only `paper_id`/`title`/`score`/`snippet` — hydrate them through `list --json` for tags and `summary_path`. Skills read summary bodies via `paper-assist show <id> --body`, which goes through `normalize_summary_body()` (invariant 5d) — never re-implement front-matter stripping in skill instructions.
 
 ## Web UI / Frontend
 
@@ -266,6 +281,8 @@ Target files:
 - `tests/test_tts_mlx.py` — MLX backend (respx-mocked `/v1/audio/speech`)
 - `tests/test_audio_assets.py` — `render_audio_assets` force × skip matrix + fallback
 - `tests/test_audio_script.py` — Claude narration script generation
+- `tests/test_config.py` — config/env resolution including qmd local XDG roots
+- `tests/test_cli_visuals.py` — `visuals inject` skill helper
 - `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
 - `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
 - `tests/test_visuals.py` — visual extraction + best-effort injection (invariant 5e)

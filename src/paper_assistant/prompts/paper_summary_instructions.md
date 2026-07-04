@@ -54,6 +54,10 @@ Mission: turn any ML research paper into actionable insight for the user.
   - Keep the prose description even when an image is embedded.
   - If no matching image link exists for a figure/table you'd like to
     show, skip it — leave the prose description and reference only.
+    Do not hunt for image URLs yourself: skill workflows run a
+    deterministic injector (`paper-assist visuals inject`) after
+    generation that adds verified arXiv-HTML image links when the source
+    has captions without image Markdown.
 
 ### 6. Paper-faithful method explanations
 - In algorithm explanations, mark claims as needed:

@@ -30,6 +30,25 @@ class SummarizationResult:
     output_tokens: int = 0
 
 
+def _message_text(response: object) -> str:
+    """Return concatenated text blocks from an Anthropic Messages response.
+
+    Newer Claude models may emit non-text blocks (for example thinking blocks)
+    before the final text block. The Anthropic SDK represents those blocks as
+    objects without a ``.text`` attribute, so callers must scan for text rather
+    than assuming the first content block is text.
+    """
+    content = getattr(response, "content", None) or []
+    text_parts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    if not text_parts:
+        raise ValueError("Claude returned no text content.")
+    return "\n".join(text_parts)
+
+
 def _require_api_key(config: Config) -> str:
     """Return the API key or raise a clear error."""
     if not config.anthropic_api_key:
@@ -71,7 +90,7 @@ async def summarize_paper_text(
         messages=[{"role": "user", "content": user_message}],
     )
 
-    full_text = response.content[0].text
+    full_text = _message_text(response)
     sections = parse_summary_sections(full_text)
 
     return SummarizationResult(
@@ -127,7 +146,7 @@ async def summarize_paper_pdf(
         ],
     )
 
-    full_text = response.content[0].text
+    full_text = _message_text(response)
     sections = parse_summary_sections(full_text)
 
     return SummarizationResult(
@@ -165,7 +184,7 @@ async def summarize_article_text(
         messages=[{"role": "user", "content": user_message}],
     )
 
-    full_text = response.content[0].text
+    full_text = _message_text(response)
     sections = parse_summary_sections(full_text)
 
     return SummarizationResult(

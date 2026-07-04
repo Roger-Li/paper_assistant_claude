@@ -45,6 +45,8 @@ class Config(BaseModel):
     qmd_command: list[str] = ["qmd"]
     qmd_index_name: str = "paper-assistant"
     qmd_collection_name: str = "papers"
+    qmd_cache_home: Path | None = None
+    qmd_config_home: Path | None = None
 
     # TTS backend + MLX settings
     tts_backend: str = "edge"  # "edge" | "mlx"
@@ -91,6 +93,14 @@ class Config(BaseModel):
     @property
     def search_dir(self) -> Path:
         return self.data_dir / "search"
+
+    @property
+    def resolved_qmd_cache_home(self) -> Path:
+        return self.qmd_cache_home or (self.data_dir / ".qmd-cache")
+
+    @property
+    def resolved_qmd_config_home(self) -> Path:
+        return self.qmd_config_home or (self.data_dir / ".qmd-config")
 
     @property
     def feed_path(self) -> Path:
@@ -214,6 +224,14 @@ def load_config(**overrides: object) -> Config:
     qmd_collection_name = os.getenv("PAPER_ASSIST_QMD_COLLECTION")
     if qmd_collection_name:
         kwargs["qmd_collection_name"] = qmd_collection_name
+
+    qmd_cache_home = os.getenv("PAPER_ASSIST_QMD_CACHE_HOME")
+    if qmd_cache_home:
+        kwargs["qmd_cache_home"] = Path(qmd_cache_home)
+
+    qmd_config_home = os.getenv("PAPER_ASSIST_QMD_CONFIG_HOME")
+    if qmd_config_home:
+        kwargs["qmd_config_home"] = Path(qmd_config_home)
 
     # TTS backend selection + MLX settings
     tts_backend = os.getenv("PAPER_ASSIST_TTS_BACKEND")

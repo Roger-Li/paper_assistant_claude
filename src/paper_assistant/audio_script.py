@@ -15,6 +15,7 @@ import anthropic
 
 from paper_assistant.config import Config
 from paper_assistant.models import PaperMetadata, SourceType
+from paper_assistant.summarizer import _message_text
 
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "audio_script_instructions.md"
@@ -105,7 +106,10 @@ async def generate_audio_script(
     if not response.content:
         raise AudioScriptError("Claude returned no content for narration script.")
 
-    text = response.content[0].text.strip()
+    try:
+        text = _message_text(response).strip()
+    except ValueError as exc:
+        raise AudioScriptError(str(exc)) from exc
     if not text:
         raise AudioScriptError("Claude returned an empty narration script.")
 
