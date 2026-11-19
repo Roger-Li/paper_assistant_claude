@@ -1,0 +1,170 @@
+<!doctype html>
+<!--
+  Starter for a Paper Assistant HTML brief. Copy to
+  .artifacts/summarize-paper/<id>/brief.src.html, replace the content, and build:
+
+      .venv/bin/python skills/shared/html-brief/build_brief.py build .artifacts/summarize-paper/<id>
+
+  The build inlines the kit (brief.css, brief.js), fills the math, table and
+  reading-time tokens below, links glossary terms, embeds local images, and
+  lints the result. Read paper_html_summary_instructions.md for what belongs in
+  each part. Keep the ids, classes and data- attributes; change everything else.
+-->
+<html lang="en" data-paper="0000.00000v1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="One sentence on what this brief covers.">
+<title>Short paper name — Paper Assistant brief</title>
+<!-- brief:kit-css -->
+<style>
+/* Paper-specific styles only (a diagram, a custom chart). Use the kit's colour
+   tokens (var(--ink), var(--accent), var(--good), var(--bad) …) so both themes work. */
+</style>
+</head>
+<body>
+<a class="skip" href="#minute">Skip to the brief</a>
+<div class="page">
+<aside class="rail" aria-label="Brief navigation">
+  <div><div class="brand">Paper Assistant · Brief</div><div class="rail-title">Short paper name</div></div>
+  <div class="progress" aria-hidden="true"><i></i></div>
+  <nav aria-label="Sections"><ol>
+    <!-- One entry per top-level <section id>. The build fills each data-rt with minutes. -->
+    <li><a href="#minute"><span>In one minute</span><span class="rt" data-rt="minute"></span></a></li>
+    <li><a href="#primers"><span>Before you read</span><span class="rt" data-rt="primers"></span></a></li>
+    <li><a href="#idea"><span>The idea</span><span class="rt" data-rt="idea"></span></a></li>
+    <li><a href="#worked"><span>Worked example</span><span class="rt" data-rt="worked"></span></a></li>
+    <li><a href="#evidence"><span>Evidence</span><span class="rt" data-rt="evidence"></span></a></li>
+    <li><a href="#skeptic"><span>Skeptical reading</span><span class="rt" data-rt="skeptic"></span></a></li>
+    <li><a href="#check"><span>Check yourself</span><span class="rt" data-rt="check"></span></a></li>
+    <li><a href="#next"><span>Use it</span><span class="rt" data-rt="next"></span></a></li>
+    <li><a href="#reference"><span>Reference</span><span class="rt" data-rt="reference"></span></a></li>
+  </ol></nav>
+  <div class="tools">
+    <button class="tool js-only" id="expand-toggle" type="button">Expand details</button>
+    <button class="tool js-only" id="theme-toggle" type="button">Dark</button>
+    <button class="tool js-only" id="print-button" type="button">Print</button>
+  </div>
+</aside>
+
+<main id="main">
+<header>
+  <p class="kicker">Area · Kind of paper · arXiv:0000.00000v1</p>
+  <h1>Exact paper title</h1>
+  <p class="byline">Authors<br>Affiliations. Venue or "arXiv preprint", date.<br>
+  <a href="https://arxiv.org/abs/0000.00000v1">Abstract</a> · <a href="https://arxiv.org/html/0000.00000v1">Full text</a> · <a href="https://arxiv.org/pdf/0000.00000v1">PDF</a> · <span data-rt-total></span></p>
+</header>
+
+<section id="minute" data-part="verdict">
+  <p class="sec-kicker">In one minute</p>
+  <p class="thesis">The paper's point in one or two plain sentences.</p>
+  <dl class="verdict">
+    <dt>The claim</dt><dd>What the paper says it shows. <a class="cite" href="https://arxiv.org/html/0000.00000v1#S1">§1</a></dd>
+    <dt>Strongest evidence</dt><dd>One result with its setting and size. <span class="tag derived">Derived</span></dd>
+    <dt>Biggest caveat</dt><dd>The qualification a careful reader needs before trusting it.</dd>
+    <dt>Read the paper if</dt><dd>Who should spend the time.</dd>
+  </dl>
+  <div class="objectives" data-part="objectives">
+    <h3>After this brief you should be able to</h3>
+    <ol><li>Three to five things the reader can do or explain. Each is tested in Check yourself.</li></ol>
+  </div>
+</section>
+
+<section id="primers" data-part="primers">
+  <p class="sec-kicker">Before you read</p>
+  <h2>Ideas the paper assumes</h2>
+  <section class="primer" id="primer-one">
+    <h3>1. The idea, stated as a plain claim</h3>
+    <p>Two or three short paragraphs and one small concrete example.</p>
+    <p class="needed">Needed for: where this primer is used later.</p>
+  </section>
+</section>
+
+<section id="idea" data-part="mechanism">
+  <p class="sec-kicker">The idea</p>
+  <h2>The mechanism as one sentence</h2>
+  <!-- A paper figure: a local file from sources/, embedded by the build. -->
+  <figure class="paper-fig wide">
+    <img src="sources/0000.00000v1/x1.png" width="800" height="300" alt="What the figure shows, in words.">
+    <figcaption><b>Original Figure 1.</b> <a class="cite" href="https://arxiv.org/html/0000.00000v1#S1.F1">Fig. 1</a>
+      <ul class="how"><li>How to read it: axes, encodings, the one thing to notice.</li></ul></figcaption>
+  </figure>
+  <ol class="steps">
+    <li><p><strong>Step.</strong> What happens and why it is designed that way.</p></li>
+  </ol>
+  <!-- Paper math: data-eq copies a display equation by its source id; data-m copies
+       inline math by its LaTeX alttext (list them with the `math` command).
+       For symbols of your own, use <span class="m">x<sub>i</sub></span>. -->
+  <div class="eq" data-eq="S2.E1"></div>
+  <p class="eq-words">The equation in words.</p>
+  <p>Inline: <span data-m="\Delta W"></span>.</p>
+  <!-- A margin note sits beside the text on wide screens. Direct child of the section. -->
+  <aside class="mn caveat"><b>Caveat.</b> One or two sentences.</aside>
+  <details><summary>Pseudocode and reproduction details <span class="hint">code</span></summary><pre><code># paper-faithful pseudocode</code></pre></details>
+</section>
+
+<section id="worked" data-part="worked-example">
+  <p class="sec-kicker">Worked example</p>
+  <h2>One small case, traced with real numbers</h2>
+  <div class="worked">
+    <!-- Chips must change text the reader can see, not only a picture. -->
+    <div class="controls js-only" data-no-terms><span class="label">Setting</span>
+      <button class="chip" type="button" aria-pressed="true">A</button></div>
+    <div class="stat-row"><div class="stat"><b>42</b><span>what this number is</span></div></div>
+  </div>
+  <div class="callout mine"><p><span class="tag inference">Inference</span> What the example teaches.</p></div>
+</section>
+
+<section id="evidence" data-part="evidence">
+  <p class="sec-kicker">Evidence</p>
+  <h2>What the results show, and how strongly</h2>
+  <!-- Rows come from evidence.json → tables.<name>; the build verifies each row against the source. -->
+  <div class="table-wrap"><table data-ledger-table="main"><caption>Setting, metric, direction. <a class="cite" href="https://arxiv.org/html/0000.00000v1#S4.T1">Table 1</a></caption></table></div>
+</section>
+
+<section id="skeptic" data-part="skeptic">
+  <p class="sec-kicker">Skeptical reading</p>
+  <h2>What holds up and what is open</h2>
+  <div class="audit"><span class="grade strong">Strong</span><h3>A reviewer's question?</h3><p>The answer, with the evidence behind the grade.</p></div>
+  <div class="audit"><span class="grade weak">Weak</span><h3>Another question?</h3><p>…</p></div>
+  <div class="audit"><span class="grade missing">Missing</span><h3>What was not tested?</h3><p>…</p></div>
+</section>
+
+<section id="check" data-part="check">
+  <p class="sec-kicker">Check yourself</p>
+  <h2>Can you rebuild the argument?</h2>
+  <p class="check-summary" id="check-summary"></p>
+  <!-- data-review names the section to re-read when the reader marks "Not yet". -->
+  <details class="check" id="q-one" data-review="#idea">
+    <summary>A question that needs the idea, not a number lookup?</summary>
+    <div class="answer"><p>A short model answer.</p></div>
+  </details>
+</section>
+
+<section id="next" data-part="next">
+  <p class="sec-kicker">Use it</p>
+  <h2>What to do with this</h2>
+  <ol class="recap"><li>The three things to remember.</li></ol>
+</section>
+
+<section id="reference" data-optional>
+  <p class="sec-kicker">Reference</p>
+  <h2>Notation, glossary, sources</h2>
+  <div class="table-wrap" data-part="notation" data-no-terms><table><thead><tr><th>Symbol</th><th>Meaning</th></tr></thead><tbody><tr><td><span class="m">x</span></td><td>…</td></tr></tbody></table></div>
+  <!-- Every entry is linked automatically at its first use in each section.
+       data-match lists the spellings to link; a trailing "s" is matched for you. -->
+  <dl class="glossary" data-part="glossary">
+    <dt id="g-term" data-match="term|other spelling">Term</dt><dd>A one- or two-sentence plain definition.</dd>
+  </dl>
+  <div data-part="sources"><p>What was read, which version, and what each provenance tag means.</p></div>
+  <footer class="brief-foot">Paper Assistant HTML brief · prepared on a date.</footer>
+</section>
+</main>
+</div>
+<!-- brief:kit-js -->
+<script>
+/* Paper-specific behaviour only. Read chart data from the built tables so a
+   chart and its table cannot disagree. */
+</script>
+</body>
+</html>

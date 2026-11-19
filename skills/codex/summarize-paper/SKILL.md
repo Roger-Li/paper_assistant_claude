@@ -1,9 +1,45 @@
 ---
 name: "summarize-paper"
-description: "Use when a user explicitly asks to summarize, import, or store an arXiv ML paper through the Paper Assistant workflow. Downloads the paper PDF, generates a structured summary following project instructions, and imports it into the local paper-assistant library with optional TTS audio and default-on Notion sync."
+description: "Summarize arXiv ML papers through Paper Assistant: import a structured Markdown summary with optional audio and default-on Notion sync, or create a standalone local HTML learning brief when explicitly requested."
 ---
 
 Use this skill when the user wants a paper summarized and stored through Paper Assistant.
+
+## HTML learning brief — route before any preflight
+
+When the user explicitly requests HTML instead of the usual Markdown summary,
+use this branch and stop before the import workflow below:
+
+1. Resolve the input to an arXiv ID as in step 1 below, preserving a requested
+   version separately for retrieval and citations.
+2. Read `src/paper_assistant/prompts/paper_summary_instructions.md` and the HTML
+   supplement, `src/paper_assistant/prompts/paper_html_summary_instructions.md`.
+3. Fetch version-pinned sources and figure files:
+   `.venv/bin/python skills/shared/html-brief/build_brief.py fetch <id>[vN] --out .artifacts/summarize-paper/<id>`
+   This replaces `hf papers read` for this branch: the brief needs the arXiv
+   HTML for section anchors, math and figures, and `hf papers read` has no body
+   for many new papers. Read the resulting `paper.md` and look at the figures in
+   `sources/`. `hf papers info <id>` stays optional metadata context (prefer a
+   working repo-local `.venv/bin/hf` if the global launcher is unavailable). If
+   the paper has no arXiv HTML, follow the supplement's PDF path.
+4. Run the best-effort related-paper lookup from step 7 below. Use hits only for
+   the brief's "connections to papers in your library" part, read through
+   `.venv/bin/paper-assist show <paper_id> --body`.
+5. Follow the supplement: write `evidence.json`, copy
+   `skills/shared/html-brief/skeleton.html` to `brief.src.html` and fill it in,
+   then build and lint:
+   `.venv/bin/python skills/shared/html-brief/build_brief.py build .artifacts/summarize-paper/<id>`
+   The build must exit 0: it verifies every source anchor and every ledger value
+   against the downloaded paper. Fix errors; resolve or report warnings.
+6. Browser-check `summary.html` as the supplement describes
+   (`node skills/shared/html-brief/check_brief.cjs …` when Playwright is
+   available) and look at the screenshots.
+7. Link the HTML and report the outcome. Do not run Notion preflight/sync,
+   transcript/TTS generation, visual injection into Markdown, `skill-import`,
+   or artifact cleanup. The pilot does not add an HTML record to `index.json`.
+
+This is a skill-level format choice, not a new `paper-assist` CLI flag. The
+ordinary Markdown workflow below retains its existing defaults.
 
 ## Workflow
 
