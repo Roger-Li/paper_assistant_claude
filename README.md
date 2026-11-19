@@ -378,6 +378,41 @@ Summarize this paper through Paper Assistant: https://arxiv.org/abs/2503.10291
 
 You can also pass just `2503.10291` or an HF paper URL like `https://huggingface.co/papers/2503.10291`. The in-repo `skills/codex/summarize-paper/SKILL.md` normalizes any accepted form to the arXiv ID, uses the Hugging Face paper route by default for retrieval, runs `paper-assist visuals inject` before transcript generation, and then imports via the canonical arXiv abs URL while stamping provenance as `codex`. It also syncs Notion by default; say `--no-sync-notion` only when you want to opt out.
 
+### HTML learning brief (pilot: Codex and Claude Code)
+
+To get a standalone brief built for learning a paper rather than filing it, ask Codex:
+
+```text
+Summarize https://arxiv.org/abs/2610.22293 as a standalone HTML brief.
+```
+
+or, in Claude Code, `/summarize 2610.22293 --html`.
+
+The HTML branch follows `src/paper_assistant/prompts/paper_html_summary_instructions.md`
+alongside the shared scientific-summary guidance and writes
+`.artifacts/summarize-paper/<id>/summary.html`: one self-contained file for
+offline reading. Each brief has the same parts, in the same places:
+
+- **In one minute**: the claim, strongest evidence, biggest caveat, and what you should be able to explain afterwards.
+- **Before you read**: short primers for ideas the paper assumes, each with a small example.
+- **The idea** and a **worked example** with numbers you can check by hand.
+- **Evidence** with the paper's original figures, then a graded **skeptical reading**.
+- **Check yourself**: questions with hidden answers that point back to the section to re-read.
+- **Reference**: notation, a glossary (terms are linked where they are used), and provenance.
+
+The shared kit in `skills/shared/html-brief/` keeps briefs consistent and checks them:
+
+| File | Role |
+| --- | --- |
+| `build_brief.py fetch <id> --out <dir>` | Pins the arXiv version; downloads the abs page, arXiv HTML, PDF and every figure file; writes anchor-annotated `paper.md`. |
+| `build_brief.py build <dir>` | Builds `summary.html` from `brief.src.html` + `evidence.json`; fails if a source anchor does not exist or a ledger number is not in the cited table row or passage. |
+| `check_brief.cjs <summary.html>` | Optional Playwright pass: layout at three widths, dark theme, no-JS, print, controls, screenshots. |
+| `brief.css`, `brief.js`, `skeleton.html` | The page frame (section rail, reading column, margin notes) and a starter file. |
+
+This pilot skips library import, audio, and Notion entirely; HTML is not stored
+in `index.json`. It is a skill workflow, not an HTML-output CLI flag. Ordinary
+Markdown summary runs keep their existing behavior.
+
 ### Kiro
 
 Ask Kiro's agent to summarize a paper:

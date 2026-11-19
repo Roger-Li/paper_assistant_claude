@@ -210,6 +210,8 @@ For user-facing setup and usage, see [README.md](README.md).
 
 ## Skill Workflow Gotchas
 
+- Both summarize skills (`skills/codex/summarize-paper/SKILL.md`, `.claude/commands/summarize.md` via `--html`) have an explicit HTML learning-brief branch, routed before Notion preflight. It reads `src/paper_assistant/prompts/paper_html_summary_instructions.md` alongside the shared summary guidance and writes a self-contained `.artifacts/summarize-paper/<paper_id>/summary.html` with retained sources. This branch skips `skill-import`, audio/transcript generation, and Notion; HTML must not be put in `summary_path` or `index.json`. It is a skill workflow, not a CLI format flag.
+- The HTML branch is driven by the skill helper kit in `skills/shared/html-brief/` (not part of the `paper-assist` CLI; run with `.venv/bin/python`). `build_brief.py fetch` replaces `hf papers read` here because the brief needs the version-pinned arXiv HTML (anchors, MathML, figure files); it only downloads assets under `https://arxiv.org/html/` and uses a generic User-Agent. `build_brief.py build` turns `brief.src.html` + `evidence.json` into `summary.html` and must exit 0: it inlines `brief.css`/`brief.js`, copies paper math from the source (`data-eq`, `data-m`), renders `data-ledger-table` tables from the ledger, auto-links glossary terms, embeds local images, and fails on any source anchor missing from the downloaded HTML or any ledger value/row not found in its cited source element. Charts must read from the built ledger tables, never from a second copy of the numbers. `check_brief.cjs` is an optional Playwright pass (`BRIEF_PLAYWRIGHT`/`BRIEF_CHROMIUM` env overrides). The brief's parts (`data-part`: verdict, objectives, primers, mechanism, worked-example, evidence, skeptic, check, next, notation, glossary, sources) and the no-presentation-mode default are product decisions (2026-11-15); `skeleton.html` must keep declaring every `EXPECTED_PARTS` entry.
 - `src/paper_assistant/prompts/paper_summary_instructions.md` is the shared summary instruction source for Claude Code, Codex, Kiro, and manual workflows. Agent summaries should use normal Markdown paragraphs, not hard-wrapped prose, and should run the prompt's redundancy pass before import (no repeated method definitions; headline metrics appear only where they add value).
 - Paper content retrieval prefers `hf papers info <id>` for metadata and `hf papers read <id>` for body content (redirected to a file to avoid shell output truncation); PDF download is the fallback path only.
 - `skill-import` must always receive the canonical arXiv URL (`https://arxiv.org/abs/<id>`), not HuggingFace or other source URLs, so that `paper_id` resolves to the arXiv ID.
@@ -286,6 +288,7 @@ Target files:
 - `tests/test_cli_transcript_regenerate.py` — `transcript regenerate` + `tts check`
 - `tests/test_web_transcript_regenerate.py` — `POST /api/paper/{id}/transcript/regenerate`
 - `tests/test_visuals.py` — visual extraction + best-effort injection (invariant 5e)
+- `tests/test_html_brief_build.py` — HTML brief kit (`skills/shared/html-brief/build_brief.py`, loaded by path): build/inline/embed, glossary auto-linking, reading times, ledger + anchor lint failures, `fetch` version pinning and asset allow-listing, skeleton ↔ `EXPECTED_PARTS` contract
 
 ## Definition of Done
 
